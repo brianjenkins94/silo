@@ -13,21 +13,25 @@
  * Static says what it CAN do; runtime refines to where it DID — and a newly-observed scope outside
  * what's been approved is the flag.
  */
-import { readFileSync, writeFileSync, existsSync, appendFileSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync, rmSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
-import { extractImports, checkImports, type ImportPolicy } from "./runner/import-policy.js";
-import { projectSurface, classify, type SurfaceEntry } from "./audit/import-surface.js";
-import { capsOf, builtinCaps } from "./audit/package-capabilities.js";
+import { tmpdir } from "node:os";
+import { extractImports, checkImports, type ImportPolicy } from "./policy/import-policy.js";
+import { projectSurface, classify, type SurfaceEntry } from "./analysis/import-surface.js";
+import { capsOf, builtinCaps } from "./analysis/package-capabilities.js";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname));
-const REGISTRY = path.join(ROOT, "registry.json");
-const DEPS = path.join(ROOT, "deps.json");
-const LEDGER = path.join(ROOT, "runs.jsonl");
-const TSX_BIN = path.join(ROOT, "node_modules/.bin/tsx");
-const CAP_ENGINE = path.join(ROOT, "runner/static-caps-lsp.ts");
-const BOX_TS = path.join(ROOT, "runner/instrument.ts");
+const TOOL = path.resolve(path.dirname(new URL(import.meta.url).pathname));    // Silo's own install — engines live here
+const PROJECT = process.cwd();                                                 // the repo being analyzed (run `silo` here)
+const SILO_DIR = path.join(PROJECT, ".silo");                                  // per-project state + baseline (commit baseline.json)
+if (!existsSync(SILO_DIR)) { mkdirSync(SILO_DIR, { recursive: true }); writeFileSync(path.join(SILO_DIR, ".gitignore"), "registry.json\nruns.jsonl\n"); }  // baseline.json is committable; runner state isn't
+const REGISTRY = path.join(SILO_DIR, "registry.json");
+const DEPS = path.join(SILO_DIR, "baseline.json");
+const LEDGER = path.join(SILO_DIR, "runs.jsonl");
+const TSX_BIN = path.join(TOOL, "node_modules/.bin/tsx");
+const CAP_ENGINE = path.join(TOOL, "engines/static-caps-lsp.ts");
+const BOX_TS = path.join(TOOL, "enforcement/instrument.ts");
 
 // Illustrative import denylist — a real deployment supplies its own.
 const POLICY: ImportPolicy = {
@@ -66,7 +70,7 @@ function staticCaps(file: string): string[] {
 
 /** Bundle the script with the broker + builtin rewriting (instrument.ts). */
 function box(file: string): string {
-	const out = path.join(ROOT, "." + path.basename(file).replace(/\.[^.]+$/u, "") + ".box.mjs");
+	const out = path.join(tmpdir(), "silo-" + process.pid + "-" + path.basename(file).replace(/\.[^.]+$/u, "") + ".box.mjs");
 	spawnSync(TSX_BIN, [BOX_TS, file, out], { stdio: ["ignore", "ignore", "inherit"], env: { ...process.env, NODE_OPTIONS: "" } });
 	return out;
 }
@@ -78,10 +82,11 @@ const seedEnv = (approved: string[]) => ({
 	ALLOW_EXEC: uniq(approved.filter((s) => s.startsWith("exec:")).map((s) => s.slice(5))).join(","),
 });
 
-/** ENFORCE: run the boxed bundle; broker gates on the allowlist and prompts; capture granted scopes. */
-function execBoxed(boxFile: string, args: string[], approved: string[]) {
+/** ENFORCE: run the boxed bundle; broker gates on the allowlist + JUDICIAL; capture granted scopes.
+ *  Passes SILO_SCRIPT/SILO_CONFIDENCE so a JUDICIAL judge can decide with Silo's own signals. */
+function execBoxed(boxFile: string, args: string[], approved: string[], ctx: { script: string; confidence: string }) {
 	const grantLog = path.join("/private/tmp", `grants-${process.pid}-${Date.now()}`);
-	const res = spawnSync("node", [boxFile, ...args], { stdio: "inherit", env: { ...process.env, NODE_OPTIONS: "", GRANT_LOG: grantLog, ...seedEnv(approved) } });
+	const res = spawnSync("node", [boxFile, ...args], { stdio: "inherit", env: { ...process.env, NODE_OPTIONS: "", GRANT_LOG: grantLog, SILO_SCRIPT: ctx.script, SILO_CONFIDENCE: ctx.confidence, ...seedEnv(approved) } });
 	const grants = existsSync(grantLog) ? uniq(readFileSync(grantLog, "utf8").trim().split("\n").filter(Boolean)) : [];
 	rmSync(grantLog, { force: true });
 	return { exit: res.status ?? 1, grants };
@@ -98,7 +103,7 @@ function ls() {
 }
 
 function run(scriptArg: string, args: string[]) {
-	const file = path.resolve(scriptArg), rel = path.relative(ROOT, file), src = readFileSync(file, "utf8"), h = sha(src);
+	const file = path.resolve(scriptArg), rel = path.relative(PROJECT, file), src = readFileSync(file, "utf8"), h = sha(src);
 	const imports = extractImports(src), violations = checkImports(imports, POLICY);
 	const reg = loadReg(), prev = reg[rel];
 
@@ -122,7 +127,7 @@ function run(scriptArg: string, args: string[]) {
 	console.log(`  approved scopes: ${approved.length}   (allowlist seeds the broker; new scopes prompt)`);
 	const mode = args.includes("--apply") ? "apply" : "dry-run";
 	console.log(`  → boxing + executing (${mode}) …\n`);
-	const { exit, grants } = execBoxed(box(file), args, approved);
+	const { exit, grants } = execBoxed(box(file), args, approved, { script: rel, confidence: confidence(rel, h).band });
 
 	const newGrants = grants.filter((g) => !approved.includes(g));
 	reg[rel] = { sha: h, imports, staticCaps: caps, approved: uniq([...approved, ...grants]) };
@@ -135,58 +140,93 @@ function run(scriptArg: string, args: string[]) {
 	console.log(`  confidence → ${after.band} ${after.score}% / ${after.n} runs`);
 }
 
-// ── CONSUMER audit: member-level dependency surface → capability + TOFU drift gate ──
+// ── BASELINE: two-sided safety baseline for a repo — your OWN code (consumer surface → capability)
+//    and your NODE_MODULES (each direct dependency's capability fingerprint). Diffed vs the committed
+//    baseline; gates drift (exit non-zero). State: <project>/.silo/baseline.json.
 type DepEntry = { kind: string; version?: string; members: string[]; dynamic: boolean; caps: string[] };
-type Deps = Record<string, DepEntry>;
-const loadDeps = (): Deps => existsSync(DEPS) ? JSON.parse(readFileSync(DEPS, "utf8")) : {};
-const saveDeps = (d: Deps) => writeFileSync(DEPS, JSON.stringify(d, null, 2) + "\n");
+type PkgEntry = { version?: string; caps: string[] };
+type Baseline = { consumer: Record<string, DepEntry>; packages: Record<string, PkgEntry> };
+const loadBaseline = (): Baseline => ({ consumer: {}, packages: {}, ...(existsSync(DEPS) ? JSON.parse(readFileSync(DEPS, "utf8")) : {}) });
+const saveBaseline = (b: Baseline) => writeFileSync(DEPS, JSON.stringify(b, null, 2) + "\n");
 
-/** `silo audit [dir] [--approve]` — surface → capability per dep, diffed vs baseline; gates new members/caps. */
-async function audit(args: string[]) {
-	const approve = args.includes("--approve");
-	const target = args.find((a) => !a.startsWith("--")) ?? ".";
+/** OWN CODE: which members of each dep your code imports/uses + what that reaches. Mutates b.consumer. */
+async function auditConsumer(b: Baseline, target: string): Promise<number> {
 	const { surface } = projectSurface(path.resolve(target));
-	const prev = loadDeps();
-	const next: Deps = {};
+	const prev = b.consumer, next: Record<string, DepEntry> = {};
 	let drift = 0;
-
-	// track real deps (packages) + builtins; local relative imports are the user's own code, not a dep
 	const tracked = Object.entries(surface)
-		.map(([spec, use]) => ({ spec, use, c: classify(spec, ROOT) }))
+		.map(([spec, use]) => ({ spec, use, c: classify(spec, PROJECT) }))
 		.filter((r) => r.c.kind !== "local")
-		.sort((a, b) => a.spec.localeCompare(b.spec));
-
-	console.log(`▶ audit ${target}   (${tracked.length} dependencies)\n`);
+		.sort((a, c) => a.spec.localeCompare(c.spec));
+	console.log(`  own code — ${tracked.length} imported dependencies`);
 	const width = Math.max(10, ...tracked.map((r) => (r.c.pkg ?? r.spec).length + (r.c.version?.length ?? 0) + 1));
 	for (const { spec, use, c } of tracked) {
 		const label = c.kind === "package" ? `${c.pkg}@${c.version ?? "?"}` : spec;
-		const caps = c.kind === "builtin" ? builtinCaps(spec, use.members, use.dynamic) : await capsOf(c.pkg!, [...use.members, ...(use.dynamic ? ["*"] : [])], ROOT);
+		const caps = c.kind === "builtin" ? builtinCaps(spec, use.members, use.dynamic) : await capsOf(c.pkg!, [...use.members, ...(use.dynamic ? ["*"] : [])], PROJECT);
 		next[spec] = { kind: c.kind, version: c.version, members: use.members, dynamic: use.dynamic, caps };
-		const capStr = caps.join(", ") || "— pure —";
-
-		const p = prev[spec];
-		let mark = "";
+		const p = prev[spec]; let mark = "";
 		if (!p) { mark = "+ new"; drift++; }
 		else {
-			const gMembers = use.members.filter((m) => !p.members.includes(m));
-			const gCaps = caps.filter((c) => !(p.caps ?? []).includes(c));
+			const gM = use.members.filter((m) => !p.members.includes(m));
+			const gC = caps.filter((x) => !(p.caps ?? []).includes(x));
 			const newDyn = use.dynamic && !p.dynamic;
-			if (gCaps.length || gMembers.length || newDyn) {
-				mark = "↑ " + [gCaps.length ? `+cap ${gCaps.join(",")}` : "", gMembers.length ? `+${gMembers.join(",")}` : "", newDyn ? "+dynamic(*)" : ""].filter(Boolean).join(" ");
-				drift++;
-			} else if (c.version && p.version && c.version !== p.version) mark = `~ ${p.version}→${c.version}`;
+			if (gC.length || gM.length || newDyn) { mark = "↑ " + [gC.length ? `+cap ${gC.join(",")}` : "", gM.length ? `+${gM.join(",")}` : "", newDyn ? "+dynamic(*)" : ""].filter(Boolean).join(" "); drift++; }
+			else if (c.version && p.version && c.version !== p.version) mark = `~ ${p.version}→${c.version}`;
 		}
-		console.log(`  ${label.padEnd(width)}  ${use.members.join(", ") || "—"}${use.dynamic ? " *" : ""}  →  ${capStr}${mark ? `   ${mark}` : ""}`);
+		console.log(`    ${label.padEnd(width)}  ${use.members.join(", ") || "—"}${use.dynamic ? " *" : ""}  →  ${caps.join(", ") || "pure"}${mark ? `   ${mark}` : ""}`);
 	}
-	for (const s of Object.keys(prev).filter((s) => !(s in next))) console.log(`  − removed    ${s}`);
-
-	if (!Object.keys(prev).length) { saveDeps(next); console.log(`\n  TOFU — baseline recorded (${tracked.length} deps). Re-run to gate drift.`); return; }
-	if (approve) { saveDeps(next); console.log(`\n  ✓ approved — baseline updated`); return; }
-	if (drift) { console.log(`\n  ⚠ ${drift} un-approved change(s). Review, then \`silo audit --approve\`.`); process.exit(1); }
-	console.log("\n  ✓ no drift");
+	for (const s of Object.keys(prev).filter((s) => !(s in next))) console.log(`    − removed   ${s}`);
+	b.consumer = next;
+	return drift;
 }
 
-const [cmd, ...rest] = process.argv.slice(2);
-if (!cmd || cmd === "ls") ls();
-else if (cmd === "audit") await audit(rest);
-else run(cmd, rest);
+/** NODE_MODULES: each DIRECT dependency's whole-package capability fingerprint — catches supply-chain
+ *  drift even for deps your code never imports (install/import-time payloads). Mutates b.packages. */
+async function auditPackages(b: Baseline): Promise<number> {
+	let pj: any;
+	try { pj = JSON.parse(readFileSync(path.join(PROJECT, "package.json"), "utf8")); } catch { console.log("\n  node_modules — no package.json, skipped"); return 0; }
+	const deps = [...new Set(Object.keys({ ...pj.dependencies, ...pj.devDependencies, ...pj.optionalDependencies }))].sort();
+	const prev = b.packages, next: Record<string, PkgEntry> = {};
+	let drift = 0;
+	console.log(`\n  node_modules — ${deps.length} direct dependencies`);
+	const width = Math.max(12, ...deps.map((d) => d.length + 9));
+	for (const pkg of deps) {
+		const c = classify(pkg, PROJECT);
+		const caps = await capsOf(pkg, [], PROJECT);
+		next[pkg] = { version: c.version, caps };
+		const p = prev[pkg]; let mark = "";
+		if (!p) { mark = "+ new"; drift++; }
+		else {
+			const gC = caps.filter((x) => !(p.caps ?? []).includes(x));
+			const verChanged = c.version && p.version && c.version !== p.version;
+			if (gC.length) { mark = `↑ +cap ${gC.join(",")}${verChanged ? ` (${p.version}→${c.version})` : ""}`; drift++; }
+			else if (verChanged) mark = `~ ${p.version}→${c.version}`;
+		}
+		console.log(`    ${`${pkg}@${c.version ?? "?"}`.padEnd(width)}  ${caps.join(", ") || "pure"}${mark ? `   ${mark}` : ""}`);
+	}
+	for (const s of Object.keys(prev).filter((s) => !(s in next))) console.log(`    − removed   ${s}`);
+	b.packages = next;
+	return drift;
+}
+
+/** `silo` / `silo baseline [dir] [--approve]` — the two-sided safety baseline (own code + node_modules). */
+async function baseline(args: string[], consumerOnly = false) {
+	const approve = args.includes("--approve");
+	const target = args.find((a) => !a.startsWith("--")) ?? ".";
+	const fresh = !existsSync(DEPS);
+	const b = loadBaseline();
+	console.log(`▶ silo ${consumerOnly ? "audit" : "baseline"} — ${PROJECT}\n`);
+	const drift = (await auditConsumer(b, target)) + (consumerOnly ? 0 : await auditPackages(b));
+	if (fresh) { saveBaseline(b); console.log(`\n  ✓ baseline written to .silo/baseline.json — commit it; re-run gates drift.`); return; }
+	if (approve) { saveBaseline(b); console.log(`\n  ✓ approved — baseline updated`); return; }
+	if (drift) { console.log(`\n  ⚠ ${drift} un-approved change(s). Review, then \`silo ${consumerOnly ? "audit" : "baseline"} --approve\`.`); process.exit(1); }
+	console.log("\n  ✓ no drift — baseline holds");
+}
+
+const argv = process.argv.slice(2);
+const cmd = argv[0];
+if (cmd === "ls") ls();
+else if (cmd === "baseline") await baseline(argv.slice(1));
+else if (cmd === "audit") await baseline(argv.slice(1), true);
+else if (!cmd || cmd.startsWith("-")) await baseline(argv);   // bare `silo` or `silo --approve` → baseline cwd
+else run(cmd, argv.slice(1));                                  // anything else is a script path (the runner)

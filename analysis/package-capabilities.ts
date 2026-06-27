@@ -1,7 +1,7 @@
 /**
  * PROTOTYPE — `package-capabilities`: capability of the SLICE of a package you actually use.
  *
- *   tsx audit/package-capabilities.ts <pkg> [member,member…] [--json]
+ *   tsx analysis/package-capabilities.ts <pkg> [member,member…] [--json]
  *
  * Bundles the INSTALLED package (externalizing only node: builtins) with rolldown, rooted at the
  * given named exports — so detected caps are "what the parts of the package I import can reach",
@@ -15,8 +15,8 @@ import { rolldown } from "rolldown";
 import { writeFileSync, rmSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import { isLikelyBundled, resolveEntry, deobfuscate } from "./deobfuscate.js";
-import { detect, refine } from "../capability-detectors.js";
-export { detect } from "../capability-detectors.js";
+import { detect, refine } from "../vocabulary/capability-detectors.js";
+export { detect } from "../vocabulary/capability-detectors.js";
 
 /** rolldown-DCE the installed package rooted at `members` (slice-precise; under-reports through thunks). */
 async function dceCaps(pkg: string, members: string[], root: string): Promise<string[]> {

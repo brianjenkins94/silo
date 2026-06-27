@@ -8,11 +8,9 @@
   },
   "scripts": {
     "silo": "tsx cli.ts",
-    "caps": "tsx runner/static-caps-lsp.ts",
-    "caps:proto": "tsx runner/static-caps-dce.ts",
-    "policy": "tsx runner/import-policy.ts",
-    "web:dev": "vite web --port 5180 --strictPort",
-    "web:build": "vite build web"
+    "caps": "tsx engines/static-caps-lsp.ts",
+    "caps:proto": "tsx engines/static-caps-dce.ts",
+    "policy": "tsx policy/import-policy.ts"
   },
   "devDependencies": {
     "@originjs/vite-plugin-commonjs": "^1.0.3",

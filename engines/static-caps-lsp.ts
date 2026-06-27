@@ -7,14 +7,14 @@
  * it yields the call *path*. Requires a typed Program — unresolved callees produce no edge, so a
  * real impl must flag them; here we just rely on a tsconfig that resolves @types/node.
  *
- * Run: ./node_modules/.bin/tsx scripts/runner/static-caps-lsp.ts <targetFile>
+ * Run: ./node_modules/.bin/tsx scripts/engines/static-caps-lsp.ts <targetFile>
  */
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import * as path from "node:path";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const fileArg = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? "runner/static-caps-lsp.ts";
+const fileArg = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? "engines/static-caps-lsp.ts";
 const FILE = path.isAbsolute(fileArg) ? fileArg : path.resolve(process.cwd(), fileArg);
 const JSON_MODE = process.argv.includes("--json");
 const URI = "file://" + FILE;
@@ -69,7 +69,7 @@ async function reach(item: any, visited: Set<string>, trail: string[], found: { 
 (async () => {
 	// prototype scaffolding: ensure node types resolve
 	const tsc = path.join(ROOT, "tsconfig.json"); const madeTsconfig = !existsSync(tsc);
-	if (madeTsconfig) writeFileSync(tsc, JSON.stringify({ compilerOptions: { module: "nodenext", moduleResolution: "nodenext", types: ["node"], typeRoots: ["node_modules/@types"], noEmit: true }, include: ["audit/**/*.ts", "runner/**/*.ts", "*.ts"] }, null, 2));
+	if (madeTsconfig) writeFileSync(tsc, JSON.stringify({ compilerOptions: { module: "nodenext", moduleResolution: "nodenext", types: ["node"], typeRoots: ["node_modules/@types"], noEmit: true }, include: ["**/*.ts"] }, null, 2));
 	try {
 		await request("initialize", { processId: process.pid, rootUri: "file://" + ROOT, workspaceFolders: [{ uri: "file://" + ROOT, name: "silo" }], capabilities: { textDocument: { callHierarchy: {}, documentSymbol: { hierarchicalDocumentSymbolSupport: true } } }, clientInfo: { name: "static-caps-lsp", version: "0" } });
 		notify("initialized", {});

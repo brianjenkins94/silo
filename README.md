@@ -66,30 +66,21 @@ what's approved is the flag.
 
 ## Components
 
-Entry + shared core:
+`cli.ts` (root) is the only entrypoint — the `silo` bin; it dispatches `baseline` / `audit` / `ls` / the
+per-script runner. Everything else is organized by concern into top-level folders:
 
-| file | role |
+| folder / file | role |
 |---|---|
-| `cli.ts` | the `silo` entry point — dispatches `audit`, the per-script runner, and `ls`. |
-| `capability-detectors.ts` | shared capability detectors (the regex core) used by both halves. |
-
-`runner/` — per-script earned/bounded trust (the original prototype):
-
-| file | role |
-|---|---|
-| `runner/static-caps-lsp.ts` | static engine via tsgo LSP call hierarchy. `--json` for machine output. |
-| `runner/static-caps-dce.ts` | alternate static engine via tree-shaking (DCE reachability). |
-| `runner/import-policy.ts` | import prohibition — denylist of specifiers (e.g. ban `left-pad`, or prefer a wrapper). |
-| `runner/instrument.ts` | bundle a script with the broker injected + `node:fs`/`node:child_process` rewritten to brokered wrappers. |
-| `runner/capability-broker.mjs` | enforcing broker — gates `net` (async prompt), `fs`/`exec` (sync prompt); allowlist + persisted grants. |
-
-`audit/` — per-dependency capability audit (the npm-boundary extension):
-
-| file | role |
-|---|---|
-| `audit/import-surface.ts` | member-level consumer surface — what your code imports & uses per dependency. |
-| `audit/package-capabilities.ts` | what a dependency's used slice can reach (DCE + deobfuscation). |
-| `audit/deobfuscate.ts` | un-thunk / un-minify bundled deps (webcrack + wakaru) before detection. |
+| `vocabulary/capability-detectors.ts` | the shared capability vocabulary (the regex core) — what counts as `fs:read`/`exec`/`net`/… |
+| `engines/static-caps-lsp.ts` | static reachability engine via tsgo LSP call hierarchy. `--json` for machine output. |
+| `engines/static-caps-dce.ts` | alternate static reachability engine via tree-shaking (DCE). |
+| `analysis/import-surface.ts` | member-level consumer surface — what your code imports & uses per dependency. |
+| `analysis/package-capabilities.ts` | what a dependency's slice can reach (DCE + deobfuscation). |
+| `analysis/deobfuscate.ts` | un-thunk / un-minify bundled deps (webcrack + wakaru) before detection. |
+| `policy/import-policy.ts` | import prohibition — denylist of specifiers (e.g. ban `left-pad`, or prefer a wrapper). |
+| `enforcement/instrument.ts` | bundle a script with the broker injected + `node:fs`/`node:child_process` rewritten to brokered wrappers. |
+| `enforcement/capability-broker.mjs` | runtime broker — gates `net`/`fs`/`exec` against the allowlist → JUDICIAL decider → BERNARD redline; allowlist + persisted grants. |
+| `examples/judge-policy.mjs` | example `JUDICIAL` judge (a declarative decider; swap for an AI/tiered one). |
 
 ## The runner
 
