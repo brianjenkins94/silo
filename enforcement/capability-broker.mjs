@@ -18,9 +18,10 @@
  * gate; never persisted; fails CLOSED with no TTY (so CI never runs a redline op unattended).
  */
 import { createRequire } from "node:module";
+import { redline, judicial } from "./decide.mjs";
+import { installCodegenGate } from "./codegen-gate.mjs";
 const require = createRequire(import.meta.url);
 const realFs = require("node:fs");
-const realCp = require("node:child_process");
 
 const list = (v) => (v ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const ALLOW = { net: list(process.env.ALLOW_NET ?? "localhost"), fs: list(process.env.ALLOW_FS), exec: list(process.env.ALLOW_EXEC) };
@@ -29,24 +30,7 @@ const granted = new Set();
 
 const grant = (scope) => { granted.add(scope); if (GRANT_LOG) { try { realFs.appendFileSync(GRANT_LOG, scope + "\n"); } catch {} } process.stderr.write(`[broker] granted ${scope}\n`); };
 
-/**
- * Consult the judiciary (JUDICIAL env). Returns a verdict { behavior, scope?, message? }, or `null`
- * = "no judiciary configured, fall back to the TTY prompt". Synchronous (spawnSync) so it composes
- * with the sync fs/exec gates as well as the async net gate.
- */
-function judicial(req) {
-	const J = process.env.JUDICIAL;
-	if (!J) return null;
-	if (J === "allow") return { behavior: "allow" };
-	if (J === "deny") return { behavior: "deny", message: "JUDICIAL=deny" };
-	try {
-		const r = realCp.spawnSync(J, { input: JSON.stringify(req), encoding: "utf8", shell: true });
-		const v = JSON.parse((r.stdout || "").trim().split("\n").pop() || "{}");
-		return v.behavior ? v : { behavior: "deny", message: "JUDICIAL: no verdict" };
-	} catch (e) {
-		return { behavior: "deny", message: "JUDICIAL error (fail closed): " + e.message };
-	}
-}
+// judicial() + redline() come from the shared decide.mjs core (one brain across all backends).
 
 function askSync(q) {
 	process.stderr.write(q);
@@ -77,16 +61,6 @@ const ctx = () => ({ script: process.env.SILO_SCRIPT, confidence: process.env.SI
 //    may auto-approve; only an attentive human via a one-time, randomized break-glass challenge.
 //    Conservative by design (over-flagging is the safe bias). Never persisted; fails CLOSED with no TTY.
 //    Always armed; the BERNARD env adds extra redline regexes (it tunes WHAT is redline, never WHO decides).
-const REDLINE = [
-	/^fs:write:.*\/\.(ssh|aws|gnupg|npmrc|netrc)\b/,                  // credentials
-	/^fs:write:.*\/\.git\//,                                          // git internals
-	/^fs:write:\/(etc|bin|sbin|usr|boot|dev|System|Library)\//,       // system dirs
-	/^exec:.*\/?(dd|mkfs|fdisk|shutdown|reboot|halt|sh|bash|zsh|curl|wget|nc|ncat|rm)(\.\w+)?$/, // dangerous bins
-	/^net:\*/,                                                        // indeterminate host
-	/^eval\b/,                                                        // dynamic code
-	...(process.env.BERNARD ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((s) => new RegExp(s)),
-];
-const redline = (scope) => REDLINE.some((re) => re.test(scope));
 const brokenGlass = new Set();
 function bernard(scope) {
 	if (brokenGlass.has(scope)) return;                              // authorized once this session (never persisted)
@@ -124,6 +98,18 @@ export function gateExecSync(cmd) {
 	if (yes(askSync(`\n[broker] ⚠ ${scope} not allowed. Allow this run? [y/N] `))) return grant(scope);
 	throw new Error(`[broker] DENIED ${scope}`);
 }
+
+// Dynamic codegen (eval / Function / Async / Generator). The shared interceptor builds the "eval:…"
+// scope; it's on BERNARD's redline, so this routes to the break-glass challenge (fail-closed headless).
+export function gateEvalSync(scope) {
+	if (redline(scope)) return bernard(scope);
+	if (granted.has(scope)) return;
+	const v = judicial({ kind: "eval", scope, ...ctx() });
+	if (v) return applyVerdict(v, scope);
+	if (yes(askSync(`\n[broker] ⚠ ${scope} not allowed. Allow this run? [y/N] `))) return grant(scope);
+	throw new Error(`[broker] DENIED ${scope}`);
+}
+installCodegenGate(gateEvalSync);
 
 const realFetch = globalThis.fetch;
 if (realFetch) globalThis.fetch = async function (input, init) {

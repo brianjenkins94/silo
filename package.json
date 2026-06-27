@@ -10,7 +10,10 @@
     "silo": "tsx cli.ts",
     "caps": "tsx engines/static-caps-lsp.ts",
     "caps:proto": "tsx engines/static-caps-dce.ts",
-    "policy": "tsx policy/import-policy.ts"
+    "policy": "tsx policy/import-policy.ts",
+    "test": "node --test \"test/node/*.test.mjs\" && npm run test:deno",
+    "test:node": "node --test \"test/node/*.test.mjs\"",
+    "test:deno": "deno test -A test/deno/"
   },
   "devDependencies": {
     "@originjs/vite-plugin-commonjs": "^1.0.3",
