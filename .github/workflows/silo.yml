@@ -1,0 +1,45 @@
+{
+  "name": "Silo",
+  "on": {
+    "push": {
+      "branches": ["main"]
+    },
+    "pull_request": null
+  },
+  "jobs": {
+    "test": {
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        { "uses": "actions/checkout@v4" },
+        {
+          "uses": "actions/setup-node@v4",
+          "with": { "node-version": 22 }
+        },
+        # No committed lockfile; the preinstall hook (policy/cooldown.mjs) cools every install.
+        { "run": "npm install --no-audit --no-fund" },
+        { "name": "Node test suite", "run": "npm run test:node" },
+        {
+          "uses": "denoland/setup-deno@v2",
+          "with": { "deno-version": "v2.x" }
+        },
+        { "name": "Deno test suite", "run": "npm run test:deno" }
+      ]
+    },
+    # Dogfood: gate the example project against its committed baseline. A PR that expands ci-demo's
+    # capability surface (e.g. adds node:child_process) fails here with an inline ::error annotation.
+    "capability-gate": {
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        { "uses": "actions/checkout@v4" },
+        {
+          "name": "Silo capability gate",
+          "uses": "./",
+          "with": {
+            "working-directory": "examples/ci-demo",
+            "mode": "audit"
+          }
+        }
+      ]
+    }
+  }
+}

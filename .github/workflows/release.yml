@@ -1,0 +1,47 @@
+{
+  "name": "Release",
+  "on": {
+    "release": {
+      "types": ["published"]
+    }
+  },
+  "permissions": {
+    "contents": "read",
+    # npm provenance
+    "id-token": "write"
+  },
+  "jobs": {
+    "publish": {
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        { "uses": "actions/checkout@v4" },
+        {
+          "uses": "actions/setup-node@v4",
+          "with": {
+            "node-version": 22,
+            "registry-url": "https://registry.npmjs.org"
+          }
+        },
+        {
+          "uses": "pnpm/action-setup@v4",
+          "with": {
+            "version": "latest",
+            "run_install": false
+          }
+        },
+        # Installs @brianjenkins94/util (→ the util-publish bin) + silo's deps; the preinstall hook
+        # (policy/cooldown.mjs) applies the release-age floor to every install.
+        { "run": "npm install --no-audit --no-fund" },
+        # util-publish builds silo from source (vite), derives exports/files, preserves the `silo` bin,
+        # ships the .mjs helpers, and publishes to npm when NPM_TOKEN is present.
+        {
+          "run": "npx util-publish",
+          "env": {
+            "NPM_TOKEN": "${{ secrets.NPM_TOKEN }}",
+            "GITHUB_REPOSITORY_OWNER": "${{ github.repository_owner }}"
+          }
+        }
+      ]
+    }
+  }
+}

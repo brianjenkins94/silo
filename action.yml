@@ -1,0 +1,54 @@
+{
+  "name": "Silo capability gate",
+  "description": "Fail the build on an un-approved expansion of capability vs the committed .silo/baseline.json.",
+  "branding": {
+    "icon": "shield",
+    "color": "purple"
+  },
+  "inputs": {
+    "working-directory": {
+      "description": "Project root to gate (where .silo/baseline.json lives). Defaults to the repo root.",
+      "default": "."
+    },
+    "path": {
+      "description": "Directory within the project to analyze.",
+      "default": "."
+    },
+    "mode": {
+      "description": "'baseline' = own code + node_modules (catches supply-chain drift); 'audit' = own code only.",
+      "default": "baseline"
+    },
+    "node-version": {
+      "description": "Node.js version Silo runs under.",
+      "default": "22"
+    }
+  },
+  "runs": {
+    "using": "composite",
+    "steps": [
+      {
+        "name": "Set up Node",
+        "uses": "actions/setup-node@v4",
+        "with": {
+          "node-version": "${{ inputs.node-version }}"
+        }
+      },
+      # Install Silo's own toolchain (tsx + the analysis engines) into the action's checkout.
+      # No lockfile by design (Silo floats versions); --no-package-lock keeps it that way.
+      {
+        "name": "Install Silo",
+        "shell": "bash",
+        "working-directory": "${{ github.action_path }}",
+        "run": "npm install --no-audit --no-fund --no-package-lock"
+      },
+      # GITHUB_ACTIONS=true is set by the runner, so cli.ts emits ::error annotations on failure.
+      # NOTE: for mode=baseline the consumer must install its own node_modules BEFORE this step.
+      {
+        "name": "Capability gate",
+        "shell": "bash",
+        "working-directory": "${{ inputs.working-directory }}",
+        "run": "\"${{ github.action_path }}/node_modules/.bin/tsx\" \"${{ github.action_path }}/cli.ts\" \"${{ inputs.mode }}\" \"${{ inputs.path }}\" --ci"
+      }
+    ]
+  }
+}
