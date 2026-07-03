@@ -19,6 +19,7 @@ npm run test:deno   # deno test -A test/deno/
 | `--import` preload | `preload.mjs` registerHooks on the real files | `node/preload.test.mjs` |
 | Deno permission broker | `deno-broker.mjs` socket; Deno enforces, silo decides | `deno/broker.test.mjs` |
 | Deno wrapper-entry | `silo-deno.mjs` gates codegen Deno can't permission | `deno/codegen.test.mjs` |
+| CI capability gate | `cli.ts <audit\|baseline> --ci` (the GitHub Action engine) | `node/ci-gate.test.mjs` |
 
 ## Gates under test
 
@@ -39,7 +40,8 @@ allow/deny accordingly.
 
 ## Not yet covered
 
-- CLI dispatch routing (`ls` / `baseline` / `audit` / bare) and baseline/drift gating — needs a fixture
-  repo + installed `node_modules` (capsOf fetches package source), so it's slower/heavier.
+- The `baseline` (node_modules / supply-chain) side of the gate — `ci-gate.test.mjs` covers the offline
+  `audit` (own-code) path; the package side needs installed `node_modules` (capsOf bundles them), so it's
+  slower/heavier and left to the workflow's dogfood job.
 - Interactive TTY prompt paths (`askSync`/`askAsync`, BERNARD break-glass *success*) — need a pty; tests
   exercise the non-TTY fail-closed path and the JUDICIAL/allowlist paths instead.

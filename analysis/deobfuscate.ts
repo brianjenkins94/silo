@@ -25,16 +25,20 @@ export function isLikelyBundled(code: string): boolean {
 	return code.length > 2000 && code.length / (nl + 1) > 200;   // long average line = minified
 }
 
-/** Resolve a package's primary entry file from node_modules. */
-export function resolveEntry(pkg: string, root: string): string | null {
-	try {
-		const dir = path.join(root, "node_modules", pkg);
-		const pj = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8"));
-		const exp = pj.exports?.["."] ?? pj.exports;
-		const ent = pj.module ?? (typeof exp === "object" ? exp.import ?? exp.default ?? exp.node : exp) ?? pj.main ?? "index.js";
-		const f = path.join(dir, typeof ent === "string" ? ent : "index.js");
-		return statSync(f).isFile() ? f : null;
-	} catch { return null; }
+/** Resolve a package's primary entry file, walking node_modules up from `fromDir` to `stopRoot`
+ *  (workspace-local install wins over the hoisted root one). */
+export function resolveEntry(pkg: string, fromDir: string, stopRoot: string = fromDir): string | null {
+	for (let d = path.resolve(fromDir), stop = path.resolve(stopRoot); ; d = path.dirname(d)) {
+		const dir = path.join(d, "node_modules", pkg);
+		try {
+			const pj = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8"));
+			const exp = pj.exports?.["."] ?? pj.exports;
+			const ent = pj.module ?? (typeof exp === "object" ? exp.import ?? exp.default ?? exp.node : exp) ?? pj.main ?? "index.js";
+			const f = path.join(dir, typeof ent === "string" ? ent : "index.js");
+			if (statSync(f).isFile()) return f;
+		} catch { /* not here — keep walking up */ }
+		if (d === stop || d === path.dirname(d)) return null;
+	}
 }
 
 const readAll = (dir: string): string => readdirSync(dir, { withFileTypes: true }).map((e) => {

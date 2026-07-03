@@ -18,8 +18,11 @@ import { isLikelyBundled, resolveEntry, deobfuscate } from "./deobfuscate.js";
 import { detect, refine } from "../vocabulary/capability-detectors.js";
 export { detect } from "../vocabulary/capability-detectors.js";
 
-/** rolldown-DCE the installed package rooted at `members` (slice-precise; under-reports through thunks). */
-async function dceCaps(pkg: string, members: string[], root: string): Promise<string[]> {
+/** rolldown-DCE the installed package rooted at `members` (slice-precise; under-reports through thunks).
+ *  The probe is written in `fromDir`, so rolldown resolves the package from that workspace's node_modules
+ *  first (walking up to the hoisted root) — matching how the package is actually installed. */
+async function dceCaps(pkg: string, members: string[], fromDir: string): Promise<string[]> {
+	const root = fromDir;
 	const named = members.filter((m) => m !== "default" && m !== "*");
 	const wantAll = !members.length || members.includes("*");   // dynamic/indeterminate → whole package
 	const wantDefault = members.includes("default");
@@ -42,13 +45,13 @@ async function dceCaps(pkg: string, members: string[], root: string): Promise<st
 }
 
 /** Capability of the package slice. Bundled dist → DCE ∪ deobfuscation (so a deob failure never loses caps). */
-export async function capsOf(pkg: string, members: string[], root: string): Promise<string[]> {
-	const entry = resolveEntry(pkg, root);
-	const dce = await dceCaps(pkg, members, root);
+export async function capsOf(pkg: string, members: string[], fromDir: string, stopRoot: string = fromDir): Promise<string[]> {
+	const entry = resolveEntry(pkg, fromDir, stopRoot);
+	const dce = await dceCaps(pkg, members, fromDir);
 	if (!(entry && isLikelyBundled(readFileSync(entry, "utf8")))) return dce;
 	// bundled artifact: union DCE with both deobfuscators' detection (whole-bundle over-approx — safe bias).
 	const all = new Set(dce);
-	for (const v of await deobfuscate(entry, root)) detect(v).forEach((c) => all.add(c));
+	for (const v of await deobfuscate(entry, fromDir)) detect(v).forEach((c) => all.add(c));
 	const out = refine(all);
 	return out.length ? out : ["?"];
 }

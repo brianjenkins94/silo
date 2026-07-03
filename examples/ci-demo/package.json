@@ -1,0 +1,5 @@
+{
+  "name": "silo-ci-demo",
+  "private": true,
+  "type": "module"
+}

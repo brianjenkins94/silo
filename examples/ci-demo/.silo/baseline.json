@@ -1,0 +1,25 @@
+{
+  "consumer": {
+    ".": {
+      "node:fs": {
+        "kind": "builtin",
+        "members": [
+          "readFileSync"
+        ],
+        "dynamic": false,
+        "caps": [
+          "fs:read"
+        ]
+      },
+      "node:path": {
+        "kind": "builtin",
+        "members": [
+          "join"
+        ],
+        "dynamic": false,
+        "caps": []
+      }
+    }
+  },
+  "packages": {}
+}

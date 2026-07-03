@@ -15,7 +15,7 @@ import * as path from "node:path";
 
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const esbuild = require(path.join(ROOT, "node_modules/esbuild"));
+const esbuild = require("esbuild");   // by name → resolves from deps in dev (tsx) and in the built dist
 const BROKER = path.join(ROOT, "enforcement/capability-broker.mjs");
 
 const CAP_FS: Record<string, "read" | "write"> = {

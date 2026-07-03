@@ -117,6 +117,70 @@ or the strongest signal, a **new capability** (`fs:read` gaining `fs:write`) —
 surface. This is honest-drift at the *interface*: not "is this package safe?" (the package-intrinsic
 supply-chain problem) but "is my relationship to this package still the one I approved?"
 
+## Dependencies — release-age cooldown
+
+A deliberate stance: **no lockfile.** Float to the newest code so breakage from an upgrade surfaces
+immediately instead of being deferred — *but* never install a release during its risky first week, when
+a freshly-published compromised version does the most damage. So pin nothing; keep every dependency at
+`"latest"`, and let the cooldown pick newest-that's-been-out-≥7-days.
+
+The trick is that a bare **`npm install` just does this**, via a `preinstall` hook that calls Silo:
+
+```jsonc
+// your project's package.json
+"scripts": { "preinstall": "[ -n \"$SILO_COOLDOWN_GUARD\" ] || npx -y @brianjenkins94/silo install" },
+"dependencies": { "some-pkg": "latest", … }
+```
+
+```sh
+npm install                         # preinstall re-resolves with --before=<now − 7d>; exits 0
+SILO_COOLDOWN_DAYS=14 npm install   # widen the window
+```
+
+npx fetches Silo into its own cache (independent of your not-yet-installed `node_modules`), so this works
+on a clean clone. The `[ -n "$SILO_COOLDOWN_GUARD" ] ||` prefix skips the npx round-trip on the inner,
+guarded re-install. (Silo's own repo cools its deps with `npm run deps` rather than a self-`preinstall` —
+a published package must not carry an install-time script that fires in every consumer.)
+
+How it works — and it took some proving (see git history): npm fixes versions at *resolution* time from
+startup config, and a lifecycle script can't change the parent's resolution. So the hook ([policy/cooldown.mjs](policy/cooldown.mjs))
+**re-runs the install itself** with `--before` (guarded against recursion via `SILO_COOLDOWN_GUARD`),
+having first removed `node_modules` + the hidden `node_modules/.package-lock.json` that npm writes pinning
+*newest*. The parent `npm install` then honors the cooled lockfile the hook wrote and exits 0 — no
+wrapper, no abort. `npm`'s `--before` resolves `"latest"` to the newest version published before the date;
+its two hard-fail cases get a clear message:
+
+- a dependency whose only releases are younger than the cooldown → *too fresh, wait it out* (the policy
+  working, not a bug);
+- an exact pin newer than the cutoff → npm refuses it (another reason to stay on `"latest"`).
+
+The [capability gate](#ci--the-capability-gate-github-action) below is the CI complement that catches
+anything that slipped in by other means.
+
+## CI — the capability gate (GitHub Action)
+
+The same drift gate runs in CI to **reject an un-approved expansion of capability** in a pull request.
+`silo <audit|baseline> --ci` is the non-interactive mode: it never writes or `--approve`s, fails if there
+is no committed `.silo/baseline.json` to gate against, and exits non-zero on any drift — emitting a
+GitHub `::error` annotation inline on the PR.
+
+A composite action ships at the repo root ([action.yml](action.yml)):
+
+```yaml
+# .github/workflows/silo.yml
+- uses: actions/checkout@v4
+- uses: brianjenkins94/silo@main
+  with:
+    mode: baseline          # own code + node_modules (supply-chain); 'audit' = own code only
+    working-directory: .     # project root holding .silo/baseline.json
+```
+
+Commit `.silo/baseline.json` (it's the approved surface; `.silo/.gitignore` already excludes the runner's
+`registry.json`/`runs.jsonl`). When a PR adds, say, `node:child_process`, the gate fails with
+`node:child_process → exec  + new` and the contributor runs `silo audit --approve` to consciously accept
+it. [examples/ci-demo](examples/ci-demo) is a self-contained, committed-baseline project the repo's own
+workflow gates as a live demo.
+
 ## Browser
 
 The dependency engine also runs **entirely client-side** (`web/`, a Vite app — no server,

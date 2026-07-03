@@ -11,14 +11,42 @@
  */
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import * as path from "node:path";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");   // silo's own install — only to locate tsgo
 const fileArg = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? "engines/static-caps-lsp.ts";
 const FILE = path.isAbsolute(fileArg) ? fileArg : path.resolve(process.cwd(), fileArg);
 const JSON_MODE = process.argv.includes("--json");
 const URI = "file://" + FILE;
-const TSGO = process.env.TSGO ?? path.join(ROOT, "node_modules/.bin/tsgo");
+
+// PROJECT = the root of the code being ANALYZED (nearest package.json above the target), distinct from
+// ROOT (silo's install dir). `isUserCode` recursion, the temp tsconfig, and the LSP workspace all anchor
+// here — so static caps resolve for an arbitrary consumer repo, not only when silo analyzes itself.
+function projectRoot(file: string): string {
+	for (let dir = path.dirname(path.resolve(file)); ; dir = path.dirname(dir)) {
+		if (existsSync(path.join(dir, "package.json"))) return dir;
+		if (dir === path.dirname(dir)) return path.dirname(path.resolve(file));
+	}
+}
+const PROJECT = projectRoot(FILE);
+// Resolve tsgo across dev (repo .bin) and the published dist (where ROOT/node_modules doesn't exist —
+// fall back to resolving @typescript/native-preview, then PATH). cli.ts treats a spawn failure as no
+// static caps, so a missing tsgo degrades gracefully rather than erroring.
+function resolveTsgo(): string {
+	if (process.env.TSGO) return process.env.TSGO;
+	const local = path.join(ROOT, "node_modules/.bin/tsgo");
+	if (existsSync(local)) return local;
+	try {
+		const require = createRequire(import.meta.url);
+		const pj = require.resolve("@typescript/native-preview/package.json");
+		const bin = require(pj).bin;
+		const rel = typeof bin === "string" ? bin : bin?.tsgo;
+		if (rel) return path.join(path.dirname(pj), rel);
+	} catch { /* not installed here */ }
+	return "tsgo";
+}
+const TSGO = resolveTsgo();
 
 // ── capability classification from a callee's definition file + name ──
 function classify(item: any): string | null {
@@ -35,7 +63,7 @@ function classify(item: any): string | null {
 	if (n === "eval" || n === "Function") return "eval";
 	return null;
 }
-const isUserCode = (uri = "") => { const f = uri.replace("file://", ""); return f.startsWith(ROOT) && !f.includes("/node_modules/") && !f.endsWith(".d.ts"); };
+const isUserCode = (uri = "") => { const f = uri.replace("file://", ""); return f.startsWith(PROJECT) && !f.includes("/node_modules/") && !f.endsWith(".d.ts"); };
 const valueExports = (src: string) => [...new Set([...src.matchAll(/^export\s+(?:async\s+)?function\s+(\w+)/gmu), ...src.matchAll(/^export\s+const\s+(\w+)/gmu)].map((m) => m[1]))];
 
 // ── minimal LSP client ──
@@ -68,10 +96,10 @@ async function reach(item: any, visited: Set<string>, trail: string[], found: { 
 
 (async () => {
 	// prototype scaffolding: ensure node types resolve
-	const tsc = path.join(ROOT, "tsconfig.json"); const madeTsconfig = !existsSync(tsc);
+	const tsc = path.join(PROJECT, "tsconfig.json"); const madeTsconfig = !existsSync(tsc);
 	if (madeTsconfig) writeFileSync(tsc, JSON.stringify({ compilerOptions: { module: "nodenext", moduleResolution: "nodenext", types: ["node"], typeRoots: ["node_modules/@types"], noEmit: true }, include: ["**/*.ts"] }, null, 2));
 	try {
-		await request("initialize", { processId: process.pid, rootUri: "file://" + ROOT, workspaceFolders: [{ uri: "file://" + ROOT, name: "silo" }], capabilities: { textDocument: { callHierarchy: {}, documentSymbol: { hierarchicalDocumentSymbolSupport: true } } }, clientInfo: { name: "static-caps-lsp", version: "0" } });
+		await request("initialize", { processId: process.pid, rootUri: "file://" + PROJECT, workspaceFolders: [{ uri: "file://" + PROJECT, name: path.basename(PROJECT) }], capabilities: { textDocument: { callHierarchy: {}, documentSymbol: { hierarchicalDocumentSymbolSupport: true } } }, clientInfo: { name: "static-caps-lsp", version: "0" } });
 		notify("initialized", {});
 		notify("textDocument/didOpen", { textDocument: { uri: URI, languageId: "typescript", version: 1, text: readFileSync(FILE, "utf8") } });
 		await new Promise((r) => setTimeout(r, 900));

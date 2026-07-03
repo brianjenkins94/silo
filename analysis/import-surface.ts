@@ -15,21 +15,25 @@
  * shadowing of an import name (rare). v2: scope-resolved references (oxc semantic / tsgo LSP).
  */
 import { parseSync } from "oxc-parser";
-import { readFileSync, statSync, readdirSync } from "node:fs";
+import { readFileSync, statSync, readdirSync, existsSync } from "node:fs";
 import * as path from "node:path";
 
 import { builtinModules } from "node:module";
 const BUILTINS = new Set([...builtinModules, ...builtinModules.map((m) => "node:" + m)]);
 
 /** Classify a specifier and, for real deps, resolve the installed version from node_modules. */
-export function classify(spec: string, root: string): { kind: "builtin" | "package" | "local"; pkg?: string; version?: string } {
+export function classify(spec: string, fromDir: string, stopRoot: string = fromDir): { kind: "builtin" | "package" | "local"; pkg?: string; version?: string } {
 	if (spec.startsWith("node:") || BUILTINS.has(spec)) return { kind: "builtin" };
 	if (spec.startsWith(".") || spec.startsWith("/")) return { kind: "local" };
 	const pkg = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];
-	try {
-		const pj = JSON.parse(readFileSync(path.join(root, "node_modules", pkg, "package.json"), "utf8"));
-		return { kind: "package", pkg, version: pj.version };
-	} catch { return { kind: "package", pkg }; }
+	// Walk node_modules up from the workspace dir to the project root: a workspace-local version wins,
+	// else the hoisted root one — so non-hoisted monorepos resolve the version each package actually has.
+	for (let d = path.resolve(fromDir), stop = path.resolve(stopRoot); ; d = path.dirname(d)) {
+		const pj = path.join(d, "node_modules", pkg, "package.json");
+		if (existsSync(pj)) { try { return { kind: "package", pkg, version: JSON.parse(readFileSync(pj, "utf8")).version }; } catch { break; } }
+		if (d === stop || d === path.dirname(d)) break;
+	}
+	return { kind: "package", pkg };
 }
 
 interface Binding { specifier: string; kind: "named" | "default" | "namespace"; imported?: string; }
@@ -106,6 +110,16 @@ export function analyze(file: string): Surface {
 	return surface;
 }
 
+/** A directory that is its own package and is marked `private: true`. Such NESTED workspaces are
+ *  silo-ignored everywhere — a private subproject (e.g. a vscode-in-browser playground) carries its own
+ *  deps and isn't governed by the enclosing project's baseline. The audit *target* itself is never tested
+ *  here (see `files`), so `cd examples/ci-demo && silo audit` still works even when ci-demo is private. */
+function isPrivateWorkspace(dir: string): boolean {
+	const pj = path.join(dir, "package.json");
+	if (!existsSync(pj)) return false;
+	try { return JSON.parse(readFileSync(pj, "utf8"))["private"] === true; } catch { return false; }
+}
+
 function files(target: string): string[] {
 	const st = statSync(target);
 	if (st.isFile()) return [target];
@@ -113,7 +127,8 @@ function files(target: string): string[] {
 	for (const e of readdirSync(target, { withFileTypes: true })) {
 		if (e.name === "node_modules" || e.name.startsWith(".")) continue;
 		const p = path.join(target, e.name);
-		if (e.isDirectory()) out.push(...files(p));
+		// Descend into subdirectories, but prune a nested private workspace (it self-governs).
+		if (e.isDirectory()) { if (!isPrivateWorkspace(p)) out.push(...files(p)); }
 		else if (isCode(e.name)) out.push(p);
 	}
 	return out;
@@ -129,6 +144,49 @@ export function projectSurface(target: string): { perFile: Record<string, Record
 		for (const [spec, use] of s) { for (const m of use.members) add(merged, spec, m); if (use.dynamic) add(merged, spec, "", true); }
 	}
 	return { perFile, surface: Object.fromEntries([...merged].map(([k, v]) => [k, { members: [...v.members].sort(), dynamic: v.dynamic }])) };
+}
+
+/** Nearest enclosing package (a file's "workspace"), as a path relative to `root` ("." for root code). */
+function owningWorkspace(file: string, root: string): string {
+	const rootAbs = path.resolve(root);
+	for (let d = path.dirname(path.resolve(file)); ; d = path.dirname(d)) {
+		if (existsSync(path.join(d, "package.json"))) return path.relative(rootAbs, d) || ".";
+		if (d === rootAbs || d === path.dirname(d)) return ".";
+	}
+}
+
+/** Like projectSurface, but partitioned by workspace (nearest package.json) — so a monorepo audit can
+ *  attribute each dep's usage to the package that imports it, keyed by path relative to `root`. */
+export function workspaceSurfaces(target: string, root: string): Record<string, Record<string, SurfaceEntry>> {
+	const buckets = new Map<string, Surface>();
+	for (const f of files(path.resolve(target))) {
+		const ws = owningWorkspace(f, root);
+		const bucket = buckets.get(ws) ?? new Map();
+		buckets.set(ws, bucket);
+		for (const [spec, use] of analyze(f)) {
+			for (const m of use.members) add(bucket, spec, m);
+			if (use.dynamic) add(bucket, spec, "", true);
+		}
+	}
+	const out: Record<string, Record<string, SurfaceEntry>> = {};
+	for (const [ws, surface] of [...buckets].sort((a, b) => a[0].localeCompare(b[0])))
+		out[ws] = Object.fromEntries([...surface].map(([k, v]) => [k, { members: [...v.members].sort(), dynamic: v.dynamic }]));
+	return out;
+}
+
+/** Per workspace, which files import each specifier — so the audit can attribute a drifting capability
+ *  back to the source file(s) that brought it in (e.g. to flag that a new cap entered via AI-authored
+ *  code). Same walk/keys as `workspaceSurfaces` (nested private workspaces pruned); file paths are
+ *  relative to cwd. */
+export function workspaceImporters(target: string, root: string): Record<string, Record<string, string[]>> {
+	const out: Record<string, Record<string, string[]>> = {};
+	for (const f of files(path.resolve(target))) {
+		const ws = owningWorkspace(f, root);
+		const rel = path.relative(process.cwd(), f);
+		const byWs = out[ws] ??= {};
+		for (const spec of analyze(f).keys()) (byWs[spec] ??= []).push(rel);
+	}
+	return out;
 }
 
 // CLI

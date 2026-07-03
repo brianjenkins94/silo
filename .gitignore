@@ -143,4 +143,8 @@ vite.config.ts.timestamp-*
 .vite/
 
 # Silo-generated state
-.silo/
+**/.silo/*
+!**/.silo/baseline.json
+
+# npm lockfile
+package-lock.json

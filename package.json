@@ -1,12 +1,20 @@
 {
   "name": "silo",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
-  "description": "Earned, bounded trust for scripts — capability fingerprinting + a bundle-injected enforcing broker.",
+  "description": "Earned, bounded trust for scripts — capability fingerprinting + a bundle-injected enforcing broker, with a release-age cooldown installer.",
   "bin": {
-    "silo": "cli.ts"
+    "silo": "cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
+    "preinstall": "node policy/cooldown.mjs",
     "silo": "tsx cli.ts",
     "caps": "tsx engines/static-caps-lsp.ts",
     "caps:proto": "tsx engines/static-caps-dce.ts",
@@ -15,17 +23,22 @@
     "test:node": "node --test \"test/node/*.test.mjs\"",
     "test:deno": "deno test -A test/deno/"
   },
+  "dependencies": {
+    "@brianjenkins94/util": "https://brianjenkins94.github.io/lib/util@latest.tgz",
+    "@wakaru/cli": "latest",
+    "@wakaru/unpacker": "latest",
+    "cmd-ts": "^0.15.0",
+    "esbuild": "latest",
+    "oxc-parser": "latest",
+    "rolldown": "latest",
+    "webcrack": "latest"
+  },
+  "optionalDependencies": {
+    "@typescript/native-preview": "latest"
+  },
   "devDependencies": {
-    "@originjs/vite-plugin-commonjs": "^1.0.3",
-    "@types/node": "26.0.1",
-    "@typescript/native-preview": "7.0.0-dev.20260624.1",
-    "@wakaru/cli": "^1.5.0",
-    "@wakaru/unpacker": "^0.1.2",
-    "esbuild": "0.28.1",
-    "oxc-parser": "^0.137.0",
-    "tsx": "4.22.4",
-    "vite": "8.1.0",
-    "vite-plugin-node-polyfills": "^0.28.0",
-    "webcrack": "^2.16.0"
+    "@types/node": "latest",
+    "tsx": "latest",
+    "vite": "latest"
   }
 }
