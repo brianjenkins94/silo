@@ -14,7 +14,7 @@
  * v1 LIMITATION: matches binding locals by name within the file; does not yet resolve local
  * shadowing of an import name (rare). v2: scope-resolved references (oxc semantic / tsgo LSP).
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import * as fs from "@brianjenkins94/util/fs";
 import { builtinModules } from "node:module";
 import * as path from "node:path";
 
@@ -33,7 +33,7 @@ export function classify(spec: string, fromDir: string, stopRoot: string = fromD
 	for (let d = path.resolve(fromDir), stop = path.resolve(stopRoot); ; d = path.dirname(d)) {
 		const pj = path.join(d, "node_modules", pkg, "package.json");
 
-		if (existsSync(pj)) { try { return { "kind": "package", "pkg": pkg, "version": JSON.parse(readFileSync(pj, "utf8")).version }; } catch { break; } }
+		if (fs.existsSync(pj)) { try { return { "kind": "package", "pkg": pkg, "version": JSON.parse(fs.readFileSync(pj)).version }; } catch { break; } }
 		if (d === stop || d === path.dirname(d)) { break; }
 	}
 
@@ -69,7 +69,7 @@ function add(s: Surface, spec: string, member: string, dynamic = false) {
 }
 
 export function analyze(file: string): Surface {
-	const src = readFileSync(file, "utf8");
+	const src = fs.readFileSync(file);
 	const { program } = parseSync(file, src);
 	const surface: Surface = new Map();
 	const locals = new Map<string, Binding>();   // local name -> what it binds to
@@ -130,33 +130,33 @@ export function analyze(file: string): Surface {
 function isPrivateWorkspace(dir: string): boolean {
 	const pj = path.join(dir, "package.json");
 
-	if (!existsSync(pj)) { return false; }
-	try { return JSON.parse(readFileSync(pj, "utf8"))["private"] === true; } catch { return false; }
+	if (!fs.existsSync(pj)) { return false; }
+	try { return JSON.parse(fs.readFileSync(pj))["private"] === true; } catch { return false; }
 }
 
-function files(target: string): string[] {
-	const st = statSync(target);
+async function files(target: string): Promise<string[]> {
+	const st = await fs.stat(target);
 
 	if (st.isFile()) { return [target]; }
 	const out: string[] = [];
 
-	for (const e of readdirSync(target, { "withFileTypes": true })) {
+	for (const e of await fs.readdir(target, { "withFileTypes": true })) {
 		if (e.name === "node_modules" || e.name.startsWith(".")) { continue; }
 		const p = path.join(target, e.name);
 
 		// Descend into subdirectories, but prune a nested private workspace (it self-governs).
-		if (e.isDirectory()) { if (!isPrivateWorkspace(p)) { out.push(...files(p)); } } else if (isCode(e.name)) { out.push(p); }
+		if (e.isDirectory()) { if (!isPrivateWorkspace(p)) { out.push(...(await files(p))); } } else if (isCode(e.name)) { out.push(p); }
 	}
 
 	return out;
 }
 
 /** Merge every code file under `target` into one consumer surface (specifier → members). */
-export function projectSurface(target: string): { "perFile": Record<string, Record<string, SurfaceEntry>>; "surface": Record<string, SurfaceEntry> } {
+export async function projectSurface(target: string): Promise<{ "perFile": Record<string, Record<string, SurfaceEntry>>; "surface": Record<string, SurfaceEntry> }> {
 	const merged: Surface = new Map();
 	const perFile: Record<string, Record<string, SurfaceEntry>> = {};
 
-	for (const f of files(path.resolve(target))) {
+	for (const f of await files(path.resolve(target))) {
 		const s = analyze(f);
 
 		perFile[path.relative(process.cwd(), f)] = Object.fromEntries([...s].map(([k, v]) => [k, { "members": [...v.members].sort(), "dynamic": v.dynamic }]));
@@ -171,17 +171,17 @@ function owningWorkspace(file: string, root: string): string {
 	const rootAbs = path.resolve(root);
 
 	for (let d = path.dirname(path.resolve(file)); ; d = path.dirname(d)) {
-		if (existsSync(path.join(d, "package.json"))) { return path.relative(rootAbs, d) || "."; }
+		if (fs.existsSync(path.join(d, "package.json"))) { return path.relative(rootAbs, d) || "."; }
 		if (d === rootAbs || d === path.dirname(d)) { return "."; }
 	}
 }
 
 /** Like projectSurface, but partitioned by workspace (nearest package.json) — so a monorepo audit can
  *  attribute each dep's usage to the package that imports it, keyed by path relative to `root`. */
-export function workspaceSurfaces(target: string, root: string): Record<string, Record<string, SurfaceEntry>> {
+export async function workspaceSurfaces(target: string, root: string): Promise<Record<string, Record<string, SurfaceEntry>>> {
 	const buckets = new Map<string, Surface>();
 
-	for (const f of files(path.resolve(target))) {
+	for (const f of await files(path.resolve(target))) {
 		const ws = owningWorkspace(f, root);
 		const bucket = buckets.get(ws) ?? new Map();
 
@@ -203,10 +203,10 @@ export function workspaceSurfaces(target: string, root: string): Record<string, 
  *  back to the source file(s) that brought it in (e.g. to flag that a new cap entered via AI-authored
  *  code). Same walk/keys as `workspaceSurfaces` (nested private workspaces pruned); file paths are
  *  relative to cwd. */
-export function workspaceImporters(target: string, root: string): Record<string, Record<string, string[]>> {
+export async function workspaceImporters(target: string, root: string): Promise<Record<string, Record<string, string[]>>> {
 	const out: Record<string, Record<string, string[]>> = {};
 
-	for (const f of files(path.resolve(target))) {
+	for (const f of await files(path.resolve(target))) {
 		const ws = owningWorkspace(f, root);
 		const rel = path.relative(process.cwd(), f);
 		const byWs = out[ws] ??= {};
@@ -221,7 +221,7 @@ export function workspaceImporters(target: string, root: string): Record<string,
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const JSON_MODE = process.argv.includes("--json");
 	const target = process.argv.find((a, i) => i >= 2 && !a.startsWith("--")) ?? ".";
-	const { perFile, surface } = projectSurface(target);
+	const { perFile, surface } = await projectSurface(target);
 
 	if (JSON_MODE) {
 		console.log(JSON.stringify({ "perFile": perFile, "surface": surface }, null, 2));

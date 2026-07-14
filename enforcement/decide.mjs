@@ -10,13 +10,27 @@
  */
 import { createRequire } from "node:module";
 
+// SECRETS — redlined on READ as well as write. The old list guarded only `fs:write`, which is backwards:
+// writing to ~/.ssh is vandalism; READING it is theft, and reading is the actual exfiltration vector.
+//
+// This is also why it's a REDLINE and not an allowlist prompt. "Allow read of ~/.ssh/id_rsa?" is exactly
+// the prompt a tired human waves through at 6pm — so the things that matter most must not be promptable.
+// Redlined scopes go to the break-glass challenge, never to the routine grant path.
+const SECRET = String.raw`(?:\.(?:ssh|aws|gnupg|kube|docker|netrc|npmrc|git-credentials)\b`
+	+ String.raw`|\.env(?:\.[\w-]+)?$`
+	+ String.raw`|\.config/(?:gh|gcloud|doctl)\b`
+	+ String.raw`|Library/Keychains/`
+	+ String.raw`|id_(?:rsa|dsa|ecdsa|ed25519)\b`
+	+ String.raw`|[^/]+\.(?:pem|key|p12|pfx|keystore)$)`;
+
 const REDLINE = [
-	/^fs:write:.*\/\.(ssh|aws|gnupg|npmrc|netrc)\b/,                  // credentials
+	new RegExp(String.raw`^fs:(read|write):.*/${SECRET}`),            // credentials & private keys — READ included
 	/^fs:write:.*\/\.git\//,                                          // git internals
 	/^fs:write:\/(etc|bin|sbin|usr|boot|dev|System|Library)\//,       // system dirs
 	/^exec:.*(dd|mkfs|fdisk|shutdown|reboot|halt|sh|bash|zsh|curl|wget|nc|ncat|rm)(\.\w+)?$/, // dangerous bins
 	/^net:\*/,                                                        // indeterminate host
 	/^eval\b/,                                                        // dynamic code
+	// The deployment's own policy seam — comma-separated regexes, appended to the defaults.
 	...(process.env.BERNARD ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((s) => new RegExp(s))
 ];
 

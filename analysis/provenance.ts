@@ -17,7 +17,7 @@
  *   tsx analysis/provenance.ts <file|dir> [--json] [--git]
  */
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import * as fs from "@brianjenkins94/util/fs";
 import * as path from "node:path";
 import { parseSync } from "oxc-parser";
 
@@ -128,7 +128,7 @@ export function scoreSource(file: string, src: string): Provenance {
 }
 
 export function analyzeFile(file: string): Provenance {
-	return scoreSource(file, readFileSync(file, "utf8"));
+	return scoreSource(file, fs.readFileSync(file));
 }
 
 /** Files touched by any commit carrying a Claude/AI `Co-authored-by:` trailer — a high-confidence,
@@ -160,17 +160,17 @@ export function gitCoauthoredFiles(cwd: string = process.cwd()): Set<string> {
 // ── CLI ──
 const CODE = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/u;
 
-function files(target: string): string[] {
-	const st = statSync(target);
+async function files(target: string): Promise<string[]> {
+	const st = await fs.stat(target);
 
 	if (st.isFile()) { return [target]; }
 	const out: string[] = [];
 
-	for (const e of readdirSync(target, { "withFileTypes": true })) {
+	for (const e of await fs.readdir(target, { "withFileTypes": true })) {
 		if (e.name === "node_modules" || e.name.startsWith(".")) { continue; }
 		const p = path.join(target, e.name);
 
-		if (e.isDirectory()) { out.push(...files(p)); } else if (CODE.test(e.name)) { out.push(p); }
+		if (e.isDirectory()) { out.push(...(await files(p))); } else if (CODE.test(e.name)) { out.push(p); }
 	}
 
 	return out;
@@ -180,7 +180,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 	const JSON_MODE = process.argv.includes("--json");
 	const target = process.argv.find((a, i) => i >= 2 && !a.startsWith("--")) ?? ".";
 	const git = process.argv.includes("--git") ? gitCoauthoredFiles() : new Set<string>();
-	const results = files(path.resolve(target)).map((f) => {
+	const results = (await files(path.resolve(target))).map((f) => {
 		const prov = analyzeFile(f);
 
 		if (git.has(path.resolve(f)) && prov.verdict !== "likely") { prov.verdict = "likely"; prov.score = 1; prov.signals.push({ "name": "git:co-author", "matches": 1, "sample": "Co-authored-by trailer" }); }

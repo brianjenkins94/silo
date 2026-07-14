@@ -8,7 +8,7 @@
  *
  * Run: ./node_modules/.bin/tsx scripts/engines/static-caps-dce.ts [targetFile]
  */
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import * as fs from "@brianjenkins94/util/fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { detect } from "../vocabulary/capability-detectors.js";
@@ -31,7 +31,7 @@ function valueExports(src: string): string[] {
 async function capsOf(vite: any, tmp: string, exportName: string): Promise<string[]> {
 	const entry = path.join(tmp, `entry-${exportName}.mjs`);
 
-	writeFileSync(entry, `import { ${exportName} } from ${JSON.stringify(target)};\nif (globalThis.__never) console.log(${exportName});\n`);
+	fs.writeFileSync(entry, `import { ${exportName} } from ${JSON.stringify(target)};\nif (globalThis.__never) console.log(${exportName});\n`);
 
 	const result = await vite.build({
 		"configFile": false,
@@ -68,7 +68,7 @@ async function capsOf(vite: any, tmp: string, exportName: string): Promise<strin
 
 const vite = await import(VITE);
 const tmp = mkdtempSync(path.join(tmpdir(), "cap-"));
-const exports = valueExports(readFileSync(target, "utf8"));
+const exports = valueExports(fs.readFileSync(target));
 
 console.log(`target: ${path.relative(process.cwd(), target)}   exports: ${exports.length}\n`);
 const map: Record<string, string[]> = {};

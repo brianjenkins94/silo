@@ -11,7 +11,7 @@
  * Source = the installed package (local-first). Sourcemaps are NOT used (forgeable; analyze what runs).
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import * as fs from "@brianjenkins94/util/fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { webcrack } from "webcrack";
@@ -28,44 +28,55 @@ export function isLikelyBundled(code: string): boolean {
 
 /** Resolve a package's primary entry file, walking node_modules up from `fromDir` to `stopRoot`
  *  (workspace-local install wins over the hoisted root one). */
-export function resolveEntry(pkg: string, fromDir: string, stopRoot: string = fromDir): string | null {
+export async function resolveEntry(pkg: string, fromDir: string, stopRoot: string = fromDir): Promise<string | null> {
 	for (let d = path.resolve(fromDir), stop = path.resolve(stopRoot); ; d = path.dirname(d)) {
 		const dir = path.join(d, "node_modules", pkg);
 
 		try {
-			const pj = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8"));
+			const pj = JSON.parse(fs.readFileSync(path.join(dir, "package.json")));
 			const exp = pj.exports?.["."] ?? pj.exports;
 			const ent = pj.module ?? (typeof exp === "object" ? exp.import ?? exp.default ?? exp.node : exp) ?? pj.main ?? "index.js";
 			const f = path.join(dir, typeof ent === "string" ? ent : "index.js");
 
-			if (statSync(f).isFile()) { return f; }
+			if ((await fs.stat(f)).isFile()) { return f; }
 		} catch { /* not here — keep walking up */ }
 
 		if (d === stop || d === path.dirname(d)) { return null; }
 	}
 }
 
-function readAll(dir: string): string {
-	return readdirSync(dir, { "withFileTypes": true }).map((e) => {
+/** Wrapper has no mkdtemp — emulate: a uniquely-named dir under the prefix. */
+async function mkdtemp(prefix: string): Promise<string> {
+	const dir = prefix + process.pid + "-" + Math.random().toString(36).slice(2);
+
+	await fs.mkdir(dir, { "recursive": true });
+
+	return dir;
+}
+
+async function readAll(dir: string): Promise<string> {
+	const parts = await Promise.all((await fs.readdir(dir, { "withFileTypes": true })).map(async (e) => {
 		const p = path.join(dir, e.name);
 
-		return e.isDirectory() ? readAll(p) : e.name.endsWith(".js") ? readFileSync(p, "utf8") : "";
-	}).join("\n");
+		return e.isDirectory() ? await readAll(p) : e.name.endsWith(".js") ? fs.readFileSync(p) : "";
+	}));
+
+	return parts.join("\n");
 }
 
 /** Deobfuscate `entry` with both engines; return the recovered-code variants (caller detects + unions). */
 export async function deobfuscate(entry: string, _root: string): Promise<string[]> {
-	const code = readFileSync(entry, "utf8");
+	const code = fs.readFileSync(entry);
 	const out: string[] = [];
 
 	try { out.push((await webcrack(code)).code); } catch {}                       // webcrack: single un-thunked file
-	const tmp = mkdtempSync(path.join(tmpdir(), "deob-wk-"));
+	const tmp = await mkdtemp(path.join(tmpdir(), "deob-wk-"));
 
 	try {
 		const r = spawnSync("node", [WAKARU, entry, "--unpack=strict", "-o", tmp], { "encoding": "utf8" });
 
-		if (!r.status) { out.push(readAll(tmp)); }                                     // wakaru: structural unpack
-	} catch {} finally { rmSync(tmp, { "recursive": true, "force": true }); }
+		if (!r.status) { out.push(await readAll(tmp)); }                                     // wakaru: structural unpack
+	} catch {} finally { await fs.rm(tmp, { "recursive": true, "force": true }); }
 
 	return out.filter(Boolean);
 }

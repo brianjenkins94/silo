@@ -10,7 +10,7 @@
  * Run: ./node_modules/.bin/tsx scripts/engines/static-caps-lsp.ts <targetFile>
  */
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import * as fs from "@brianjenkins94/util/fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 
@@ -25,7 +25,7 @@ const URI = "file://" + FILE;
 // here — so static caps resolve for an arbitrary consumer repo, not only when silo analyzes itself.
 function projectRoot(file: string): string {
 	for (let dir = path.dirname(path.resolve(file)); ; dir = path.dirname(dir)) {
-		if (existsSync(path.join(dir, "package.json"))) { return dir; }
+		if (fs.existsSync(path.join(dir, "package.json"))) { return dir; }
 		if (dir === path.dirname(dir)) { return path.dirname(path.resolve(file)); }
 	}
 }
@@ -39,7 +39,7 @@ function resolveTsgo(): string {
 	if (process.env.TSGO) { return process.env.TSGO; }
 	const local = path.join(ROOT, "node_modules/.bin/tsgo");
 
-	if (existsSync(local)) { return local; }
+	if (fs.existsSync(local)) { return local; }
 	try {
 		const require = createRequire(import.meta.url);
 		const pj = require.resolve("@typescript/native-preview/package.json");
@@ -145,13 +145,13 @@ async function reach(item: any, visited: Set<string>, trail: string[], found: { 
 
 (async () => {
 	// prototype scaffolding: ensure node types resolve
-	const tsc = path.join(PROJECT, "tsconfig.json"); const madeTsconfig = !existsSync(tsc);
+	const tsc = path.join(PROJECT, "tsconfig.json"); const madeTsconfig = !fs.existsSync(tsc);
 
-	if (madeTsconfig) { writeFileSync(tsc, JSON.stringify({ "compilerOptions": { "module": "nodenext", "moduleResolution": "nodenext", "types": ["node"], "typeRoots": ["node_modules/@types"], "noEmit": true }, "include": ["**/*.ts"] }, null, 2)); }
+	if (madeTsconfig) { fs.writeFileSync(tsc, JSON.stringify({ "compilerOptions": { "module": "nodenext", "moduleResolution": "nodenext", "types": ["node"], "typeRoots": ["node_modules/@types"], "noEmit": true }, "include": ["**/*.ts"] }, null, 2)); }
 	try {
 		await request("initialize", { "processId": process.pid, "rootUri": "file://" + PROJECT, "workspaceFolders": [{ "uri": "file://" + PROJECT, "name": path.basename(PROJECT) }], "capabilities": { "textDocument": { "callHierarchy": {}, "documentSymbol": { "hierarchicalDocumentSymbolSupport": true } } }, "clientInfo": { "name": "static-caps-lsp", "version": "0" } });
 		notify("initialized", {});
-		notify("textDocument/didOpen", { "textDocument": { "uri": URI, "languageId": "typescript", "version": 1, "text": readFileSync(FILE, "utf8") } });
+		notify("textDocument/didOpen", { "textDocument": { "uri": URI, "languageId": "typescript", "version": 1, "text": fs.readFileSync(FILE) } });
 		await new Promise((r) => setTimeout(r, 900));
 		// Seed roots from ALL top-level functions/vars (SymbolKind Function=12, Method=6, Variable=13,
 		// Constant=14), NOT just exports — so the non-exported entry (`main`) is rooted and its caps
@@ -192,7 +192,7 @@ async function reach(item: any, visited: Set<string>, trail: string[], found: { 
 
 		await request("shutdown", {}).catch(() => {}); notify("exit", {});
 	} finally {
-		if (madeTsconfig) { rmSync(tsc, { "force": true }); }
+		if (madeTsconfig) { await fs.rm(tsc, { "force": true }); }
 		setTimeout(() => { p.kill(); process.exit(0); }, 300);
 	}
 })().catch((e) => { console.error("ERR", e); p.kill(); process.exit(1); });
