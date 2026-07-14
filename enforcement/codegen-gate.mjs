@@ -14,24 +14,39 @@ export function installCodegenGate(gate) {
 	const scopeOf = (src) => "eval:" + String(src).replace(/\s+/g, " ").slice(0, 60);
 
 	const realEval = globalThis.eval;
-	globalThis.eval = (s) => { gate(scopeOf(s)); return realEval(s); };
+
+	globalThis.eval = (s) => {
+		gate(scopeOf(s));
+
+		return realEval(s);
+	};
 
 	// Wrap a codegen constructor so both call and `new` gate first. The Proxy forwards .prototype reads,
 	// so instanceof stays intact; Reflect.construct preserves newTarget for subclassing.
 	const gateCtor = (Ctor) => new Proxy(Ctor, {
-		apply: (t, self, a) => { gate(scopeOf(a.join(","))); return Reflect.apply(t, self, a); },
-		construct: (t, a, nt) => { gate(scopeOf(a.join(","))); return Reflect.construct(t, a, nt); },
+		"apply": (t, self, a) => {
+			gate(scopeOf(a.join(",")));
+
+			return Reflect.apply(t, self, a);
+		},
+		"construct": (t, a, nt) => {
+			gate(scopeOf(a.join(",")));
+
+			return Reflect.construct(t, a, nt);
+		}
 	});
 
 	const CTORS = [
 		[globalThis.Function, true],                                       // Function (also a global)
-		[Object.getPrototypeOf(async function () {}).constructor, false],  // AsyncFunction
-		[Object.getPrototypeOf(function* () {}).constructor, false],       // GeneratorFunction
-		[Object.getPrototypeOf(async function* () {}).constructor, false], // AsyncGeneratorFunction
+		[Object.getPrototypeOf(async function() {}).constructor, false],  // AsyncFunction
+		[Object.getPrototypeOf(function *() {}).constructor, false],       // GeneratorFunction
+		[Object.getPrototypeOf(async function *() {}).constructor, false] // AsyncGeneratorFunction
 	];
+
 	for (const [Ctor, isGlobal] of CTORS) {
 		const gated = gateCtor(Ctor);
-		if (isGlobal) globalThis.Function = gated;
-		Object.defineProperty(Ctor.prototype, "constructor", { value: gated, writable: false, enumerable: false, configurable: true });
+
+		if (isGlobal) { globalThis.Function = gated; }
+		Object.defineProperty(Ctor.prototype, "constructor", { "value": gated, "writable": false, "enumerable": false, "configurable": true });
 	}
 }

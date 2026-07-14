@@ -11,11 +11,12 @@
  * Local-first: analyzes node_modules. (esm.sh is a fallback compute lever for the browser/no-bundler
  * case — deliberately omitted here.) Bundling can fail on exotic packages → returns ["?"] = unanalyzable.
  */
-import { rolldown } from "rolldown";
-import { writeFileSync, rmSync, readFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
-import { isLikelyBundled, resolveEntry, deobfuscate } from "./deobfuscate.js";
+import { rolldown } from "rolldown";
 import { detect, refine } from "../vocabulary/capability-detectors.js";
+import { deobfuscate, isLikelyBundled, resolveEntry } from "./deobfuscate.js";
+
 export { detect } from "../vocabulary/capability-detectors.js";
 
 /** rolldown-DCE the installed package rooted at `members` (slice-precise; under-reports through thunks).
@@ -31,16 +32,19 @@ async function dceCaps(pkg: string, members: string[], fromDir: string): Promise
 		? `import * as M from ${JSON.stringify(pkg)};`
 		: [wantDefault ? `import D from ${JSON.stringify(pkg)};` : "", named.length ? `import { ${named.join(", ")} } from ${JSON.stringify(pkg)};` : ""].filter(Boolean).join("\n");
 	const tmpEntry = path.join(root, `.cap-pkg-${process.pid}-${Math.random().toString(36).slice(2)}.mjs`);
+
 	writeFileSync(tmpEntry, `${imports}\nif (globalThis.__never) console.log(${refs || "0"});\n`);
 	try {
-		const b = await rolldown({ input: tmpEntry, external: (id: string) => id.startsWith("node:"), treeshake: { moduleSideEffects: false }, logLevel: "silent" });
-		const { output } = await b.generate({ format: "es" });
+		const b = await rolldown({ "input": tmpEntry, "external": (id: string) => id.startsWith("node:"), "treeshake": { "moduleSideEffects": false }, "logLevel": "silent" });
+		const { output } = await b.generate({ "format": "es" });
+
 		await b.close();
+
 		return detect(output.map((o: any) => o.code ?? "").join("\n"));
 	} catch {
 		return ["?"];   // unanalyzable (exotic bundle/native/conditional-exports)
 	} finally {
-		rmSync(tmpEntry, { force: true });
+		rmSync(tmpEntry, { "force": true });
 	}
 }
 
@@ -48,11 +52,14 @@ async function dceCaps(pkg: string, members: string[], fromDir: string): Promise
 export async function capsOf(pkg: string, members: string[], fromDir: string, stopRoot: string = fromDir): Promise<string[]> {
 	const entry = resolveEntry(pkg, fromDir, stopRoot);
 	const dce = await dceCaps(pkg, members, fromDir);
-	if (!(entry && isLikelyBundled(readFileSync(entry, "utf8")))) return dce;
+
+	if (!(entry && isLikelyBundled(readFileSync(entry, "utf8")))) { return dce; }
 	// bundled artifact: union DCE with both deobfuscators' detection (whole-bundle over-approx — safe bias).
 	const all = new Set(dce);
-	for (const v of await deobfuscate(entry, fromDir)) detect(v).forEach((c) => all.add(c));
+
+	for (const v of await deobfuscate(entry, fromDir)) { detect(v).forEach((c) => all.add(c)); }
 	const out = refine(all);
+
 	return out.length ? out : ["?"];
 }
 
@@ -60,17 +67,16 @@ export async function capsOf(pkg: string, members: string[], fromDir: string, st
 export function builtinCaps(spec: string, members: string[], dynamic = false): string[] {
 	const base = spec.replace(/^node:/, "");
 	const caps = new Set<string>();
+
 	if (base === "fs" || base === "fs/promises") {
 		for (const m of members) {
-			if (/^(read|exists|stat|realpath|access|opendir|readdir|watch|lstat)/.test(m) || m === "createReadStream") caps.add("fs:read");
-			else if (/^(write|append|mkdir|unlink|rm|rename|cp|copy|chmod|chown|truncate|symlink|link|utimes|open|mkdtemp)/.test(m) || m === "createWriteStream") caps.add("fs:write");
-			else caps.add("fs");
+			if (/^(read|exists|stat|realpath|access|opendir|readdir|watch|lstat)/.test(m) || m === "createReadStream") { caps.add("fs:read"); } else if (/^(write|append|mkdir|unlink|rm|rename|cp|copy|chmod|chown|truncate|symlink|link|utimes|open|mkdtemp)/.test(m) || m === "createWriteStream") { caps.add("fs:write"); } else { caps.add("fs"); }
 		}
-		if (dynamic || !members.length) caps.add("fs");
-		if (caps.has("fs:read") || caps.has("fs:write")) caps.delete("fs");
-	} else if (base === "child_process") caps.add("exec");
-	else if (["net", "http", "https", "http2", "tls", "dgram", "dns"].includes(base)) caps.add("net");
-	else if (base === "vm") caps.add("eval");
+
+		if (dynamic || !members.length) { caps.add("fs"); }
+		if (caps.has("fs:read") || caps.has("fs:write")) { caps.delete("fs"); }
+	} else if (base === "child_process") { caps.add("exec"); } else if (["net", "http", "https", "http2", "tls", "dgram", "dns"].includes(base)) { caps.add("net"); } else if (base === "vm") { caps.add("eval"); }
+
 	return [...caps].sort();
 }
 
@@ -80,6 +86,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 	const pkg = args[0] ?? ".";
 	const members = (args[1] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 	const caps = await capsOf(pkg, members, process.cwd());
-	if (process.argv.includes("--json")) console.log(JSON.stringify({ pkg, slice: members.length ? members : "*", caps }));
-	else console.log(`${pkg}  [${members.join(", ") || "*"}]  →  ${caps.join(", ") || "— pure —"}`);
+
+	if (process.argv.includes("--json")) { console.log(JSON.stringify({ "pkg": pkg, "slice": members.length ? members : "*", "caps": caps })); } else { console.log(`${pkg}  [${members.join(", ") || "*"}]  →  ${caps.join(", ") || "— pure —"}`); }
 }

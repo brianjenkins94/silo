@@ -13,15 +13,17 @@ import { readFileSync } from "node:fs";
 const r = JSON.parse(readFileSync(0, "utf8") || "{}");
 
 function decide(r) {
-	if (r.kind === "fs" && r.op === "read") return { behavior: "allow" };
-	if (r.kind === "fs" && r.op === "write")
+	if (r.kind === "fs" && r.op === "read") { return { "behavior": "allow" }; }
+	if (r.kind === "fs" && r.op === "write") {
 		return /^\/(private\/)?tmp\//.test(r.path || "")
-			? { behavior: "allow" }
-			: { behavior: "deny", message: `fs:write outside /tmp denied: ${r.path}` };
-	if (r.kind === "net" && /(^|\.)localhost$/.test((r.host || "").split(":")[0]))
-		return { behavior: "allow", persist: true };
-	if (r.kind === "exec") return { behavior: "deny", message: `exec not permitted: ${r.bin}` };
-	return { behavior: "deny", message: `no policy rule for ${r.scope}` };
+			? { "behavior": "allow" }
+			: { "behavior": "deny", "message": `fs:write outside /tmp denied: ${r.path}` };
+	}
+
+	if (r.kind === "net" && /(^|\.)localhost$/.test((r.host || "").split(":")[0])) { return { "behavior": "allow", "persist": true }; }
+	if (r.kind === "exec") { return { "behavior": "deny", "message": `exec not permitted: ${r.bin}` }; }
+
+	return { "behavior": "deny", "message": `no policy rule for ${r.scope}` };
 }
 
 process.stdout.write(JSON.stringify(decide(r)));

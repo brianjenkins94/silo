@@ -5,4 +5,5 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 
 const pkg = readFileSync(path.join(import.meta.dirname, "package.json"), "utf8");
+
 console.log("ci-demo read", JSON.parse(pkg).name);

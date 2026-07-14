@@ -16,31 +16,49 @@ import "./capability-broker.mjs"; // runs first → fetch override + banner + al
 const BROKER = new URL("./capability-broker.mjs", import.meta.url).href;
 
 const CAP_FS = {
-	readFileSync: "read", readFile: "read", existsSync: "read", statSync: "read", readdirSync: "read", createReadStream: "read",
-	writeFileSync: "write", writeFile: "write", appendFileSync: "write", mkdirSync: "write", unlinkSync: "write", rmSync: "write", renameSync: "write", createWriteStream: "write",
+	"readFileSync": "read",
+	"readFile": "read",
+	"existsSync": "read",
+	"statSync": "read",
+	"readdirSync": "read",
+	"createReadStream": "read",
+	"writeFileSync": "write",
+	"writeFile": "write",
+	"appendFileSync": "write",
+	"mkdirSync": "write",
+	"unlinkSync": "write",
+	"rmSync": "write",
+	"renameSync": "write",
+	"createWriteStream": "write"
 };
 const CAP_EXEC = new Set(["execFileSync", "execSync", "exec", "execFile", "spawnSync", "spawn", "fork"]);
-const TARGETS = { fs: { caps: CAP_FS, gate: "gateFsSync" }, "child_process": { caps: CAP_EXEC, gate: "gateExecSync" } };
+const TARGETS = { "fs": { "caps": CAP_FS, "gate": "gateFsSync" }, "child_process": { "caps": CAP_EXEC, "gate": "gateExecSync" } };
 
 registerHooks({
-	load(url, context, nextLoad) {
+	"load": function(url, context, nextLoad) {
 		const base = url.replace(/^node:/, "").split("?")[0];
 		const t = TARGETS[base];
-		if (!t) return nextLoad(url, context);
+
+		if (!t) { return nextLoad(url, context); }
 		const real = process.getBuiltinModule("node:" + base);
-		const keys = Object.keys(real).filter((k) => /^[A-Za-z_$][\w$]*$/.test(k));
+		const keys = Object.keys(real).filter((k) => /^[A-Z_$][\w$]*$/i.test(k));
 		let src = `import { ${t.gate} } from ${JSON.stringify(BROKER)};\n`;
+
 		src += `const real = process.getBuiltinModule(${JSON.stringify("node:" + base)});\n`;
 		src += `const w = Object.assign(Object.create(null), real);\n`;
 		for (const k of keys) {
 			const isCap = t.caps instanceof Set ? t.caps.has(k) : k in t.caps;
+
 			if (isCap) {
 				const arg = t.gate === "gateFsSync" ? `${JSON.stringify(t.caps[k])}, a[0]` : "a[0]";
+
 				src += `w.${k} = (...a) => { ${t.gate}(${arg}); return real.${k}(...a); };\n`;
 			}
 		}
+
 		src += `export default w;\n`;
-		for (const k of keys) src += `export const ${k} = w[${JSON.stringify(k)}];\n`;
-		return { format: "module", source: src, shortCircuit: true };
-	},
+		for (const k of keys) { src += `export const ${k} = w[${JSON.stringify(k)}];\n`; }
+
+		return { "format": "module", "source": src, "shortCircuit": true };
+	}
 });

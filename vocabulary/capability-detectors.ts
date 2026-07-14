@@ -17,7 +17,7 @@ export const DETECTORS: [RegExp, string][] = [
 	[/\bprocess\.env\b/, "env"],
 	[/\b(writeFileSync|writeFile|createWriteStream|mkdirSync|mkdir|unlinkSync|unlink|rmSync|renameSync|appendFileSync)\s*\(/, "fs:write"],
 	[/\b(readFileSync|readFile|createReadStream|readdirSync|readdir|existsSync|statSync)\s*\(/, "fs:read"],
-	[imp("fs"), "fs"],   // coarse — dropped by refine() if read/write seen
+	[imp("fs"), "fs"]   // coarse — dropped by refine() if read/write seen
 ];
 
 export function detect(code: string): string[] {
@@ -26,7 +26,10 @@ export function detect(code: string): string[] {
 
 /** Drop the indeterminate marker and the coarse `fs` when a granular fs:read/write is present. */
 export function refine(caps: Iterable<string>): string[] {
-	const s = new Set(caps); s.delete("?");
-	if (s.has("fs:read") || s.has("fs:write")) s.delete("fs");
+	const s = new Set(caps);
+
+	s.delete("?");
+	if (s.has("fs:read") || s.has("fs:write")) { s.delete("fs"); }
+
 	return [...s].sort();
 }

@@ -19,6 +19,7 @@
     "caps": "tsx engines/static-caps-lsp.ts",
     "caps:proto": "tsx engines/static-caps-dce.ts",
     "policy": "tsx policy/import-policy.ts",
+    "lint": "util-lint",
     "test": "node --test \"test/node/*.test.mjs\" && npm run test:deno",
     "test:node": "node --test \"test/node/*.test.mjs\"",
     "test:deno": "deno test -A test/deno/"
@@ -37,6 +38,7 @@
     "@typescript/native-preview": "latest"
   },
   "devDependencies": {
+    "@tsconfig/node-lts": "^24.0.0",
     "@types/node": "latest",
     "tsx": "latest",
     "vite": "latest"
