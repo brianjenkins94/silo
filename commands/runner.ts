@@ -1,16 +1,17 @@
 /**
  * The `silo <script>` execution path: fingerprint a script, gate imports, box it with the broker, run
- * it, capture the scopes the broker granted, and score confidence from run history. `ls` lists what's
+ * it, capture the scopes the broker granted, and score confidence from run history. `status` lists what's
  * been managed; `installCmd` shells the cooldown installer.
  */
-import type { ImportPolicy } from "./policy/import-policy.js";
+import type { ImportPolicy } from "../policy/import-policy.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "@brianjenkins94/util/fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { BOX_TS, CAP_ENGINE, ensureSiloDir, LEDGER, PROJECT, REGISTRY, RUNNER, TOOL } from "./paths.js";
-import { checkImports, extractImports } from "./policy/import-policy.js";
+import { BOX_TS, CAP_ENGINE, clearPending, ensureSiloDir, LEDGER, PROJECT, readPending, REGISTRY, RUNNER, TOOL } from "../shared/paths.js";
+import { capabilityDrift, establishBaseline } from "./audit.js";
+import { checkImports, extractImports } from "../policy/import-policy.js";
 
 // Illustrative import denylist — a real deployment supplies its own.
 const POLICY: ImportPolicy = {
@@ -50,7 +51,7 @@ function confidence(script: string, currentSha: string) {
 	return { "band": lb < 0.2 ? "unproven" : lb < 0.6 ? "provisional" : "trusted", "score": Math.round(lb * 100), "n": runs.length };
 }
 
-/** STATIC: run the static-caps-lsp engine (--json) once per content hash. */
+/** STATIC: run the static-lsp engine (--json) once per content hash. */
 function staticCaps(file: string): string[] {
 	const r = spawnSync(RUNNER[0], [...RUNNER.slice(1), CAP_ENGINE, file, "--json"], { "encoding": "utf8", "env": { ...process.env, "NODE_OPTIONS": "" } });
 	const line = (r.stdout ?? "").trim().split("\n").filter(Boolean).pop() ?? "{}";
@@ -58,7 +59,7 @@ function staticCaps(file: string): string[] {
 	try { return JSON.parse(line).caps ?? []; } catch { return []; }
 }
 
-/** Bundle the script with the broker + builtin rewriting (instrument.ts). */
+/** Bundle the script with the broker + builtin rewriting (box.ts). */
 function box(file: string): string {
 	const out = path.join(tmpdir(), "silo-" + process.pid + "-" + path.basename(file).replace(/\.[^.]+$/u, "") + ".box.mjs");
 
@@ -88,7 +89,7 @@ async function execBoxed(boxFile: string, args: string[], approved: string[], ct
 	return { "exit": res.status ?? 1, "grants": grants };
 }
 
-export function ls(): void {
+export function status(): void {
 	const reg = loadReg();
 
 	for (const [script, e] of Object.entries(reg)) {
@@ -110,9 +111,46 @@ export async function run(scriptArg: string, args: string[]): Promise<void> {
 	const reg = loadReg(); const
 		prev = reg[rel];
 
+	console.log(`▶ ${rel}`);
+
+	// FAMILY-C ESCALATION — the audit RIDES the run. When cooldown flagged that deps moved, carry the project
+	// capability-drift check before executing, so `silo <script>` is the one command a dev needs. Block on
+	// un-approved expansion (fail closed — interactive or not, never silently proceed past a widened surface);
+	// otherwise clear the marker and continue. No marker → trust the committed baseline and stay cheap. Ignored
+	// under CI, where the gate (`CI=true silo audit`) is the drift check and the marker is just install noise.
+	const pending = readPending();
+
+	if (pending && !/^(1|true)$/iu.test(process.env["CI"] ?? "")) {
+		console.log(`  ⚠ dependencies changed (${pending.at.slice(0, 10)}) — reviewing your capability surface before running:\n`);
+		const { "drift": depDrift, "fresh": noBaseline, "gated": unread } = await capabilityDrift(PROJECT);
+
+		// TRUST RATCHET — a NON-BLOCKING nudge at the run moment (it blocks only at the gate moment / CI). The
+		// capability axis below can stop the run; the quality axis only reminds you what you've touched unread.
+		if (unread.length) {
+			console.log(`  ⚠ trust: ${unread.length} capability-bearing unit(s) you've touched are unreviewed — \`silo --reviewed <file>#<fn>\`, or review at commit:`);
+			for (const u of unread) { console.log(`      ${u.understood === "stale" ? "◐" : "○"} ${u.id}`); }
+			console.log("");
+		}
+
+		if (noBaseline) {
+			// FIRST-RUN ONBOARDING: deps were installed but there's no baseline yet. Establish one from the
+			// current surface (announced, not silent), clear the marker, and run — so `silo <script>` is a
+			// self-contained on-ramp, no separate `silo` step required to get started.
+			console.log("\n  no committed baseline yet — establishing your first one from the current surface:\n");
+			await establishBaseline(PROJECT);
+			await clearPending();
+			console.log("\n  ✓ baseline written to .silo/baseline.json — review it and commit. Proceeding.\n");
+		} else if (depDrift) {
+			console.error(`\n  ✗ blocked: ${depDrift} un-approved capability change(s) since your baseline. Review with \`silo\`, accept with \`silo --approve\`, then re-run.`);
+			process.exit(1);
+		} else {
+			await clearPending();
+			console.log("\n  ✓ dependencies changed, but your capability surface is unchanged — proceeding.\n");
+		}
+	}
+
 	const caps = prev?.sha === h && prev.staticCaps ? prev.staticCaps : staticCaps(file);   // cached per content hash
 
-	console.log(`▶ ${rel}`);
 	console.log(`  static caps: ${caps.join(", ") || "— none —"}${prev?.sha === h ? "  (cached)" : ""}`);
 	if (violations.length) {
 		console.log("  ⚠ import-policy:");
@@ -153,10 +191,10 @@ export async function run(scriptArg: string, args: string[]): Promise<void> {
 	console.log(`  confidence → ${after.band} ${after.score}% / ${after.n} runs`);
 }
 
-/** Cooldown-aware install — delegates to policy/cooldown.mjs (the same engine the `preinstall` hook runs,
+/** Cooldown-aware install — delegates to install/cooldown.mjs (the same engine the `preinstall` hook runs,
  *  so `silo install` and a bare `npm install` behave identically). An explicit entry for passing args. */
 export function installCmd(args: string[]): void {
-	const r = spawnSync(process.execPath, [path.join(TOOL, "policy/cooldown.mjs"), ...args], { "stdio": "inherit" });
+	const r = spawnSync(process.execPath, [path.join(TOOL, "install/cooldown.mjs"), ...args], { "stdio": "inherit" });
 
 	process.exit(r.status ?? 0);
 }

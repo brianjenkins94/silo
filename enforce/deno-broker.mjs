@@ -1,14 +1,14 @@
 /**
  * PROTOTYPE — Deno permission-broker adapter: silo as the FULL owner of TOFU under Deno.
  *
- *   node enforcement/deno-broker.mjs /tmp/silo.sock        # start the broker (its own TTY = prompts work)
+ *   node enforce/deno-broker.mjs /tmp/silo.sock        # start the broker (its own TTY = prompts work)
  *   DENO_PERMISSION_BROKER_PATH=/tmp/silo.sock deno run x  # Deno routes every permission check here
  *
  * Deno disables its flags + prompt and sends each check { v, pid, id, datetime, permission, value? };
  * we map it to a silo scope, run the decision pipeline (BERNARD redline → allowlist → JUDICIAL →
  * record drift), and reply { id, result:"allow"|"deny", reason? }. Deno still ENFORCES (its sandbox) —
  * we only DECIDE. NOTE: decision logic mirrors capability-broker.mjs; TODO extract a shared
- * enforcement/decide.mjs so both backends share one brain (avoid redline-list drift).
+ * enforce/decide.mjs so both backends share one brain (avoid redline-list drift).
  * Coverage: Deno models read/write/net(host)/run/env/ffi/sys — eval is NOT a Deno permission, so it
  * never reaches here; gating eval under Deno still needs an in-runtime shim (see notes).
  */

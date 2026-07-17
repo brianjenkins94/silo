@@ -1,10 +1,10 @@
 /**
  * PROTOTYPE — Deno eval/Function shim (Deno has no `--import` preload, so this is a WRAPPER ENTRY).
  *
- *   DENO_PERMISSION_BROKER_PATH=/tmp/silo.sock deno run enforcement/silo-deno.mjs <target> [args]
+ *   DENO_PERMISSION_BROKER_PATH=/tmp/silo.sock deno run enforce/silo-deno.mjs <target> [args]
  *
  * Two-layer enforcement under Deno:
- *   • native caps (read/write/net/run/env) — Deno's sandbox enforces, routed to enforcement/deno-broker.mjs
+ *   • native caps (read/write/net/run/env) — Deno's sandbox enforces, routed to enforce/deno-broker.mjs
  *   • dynamic codegen — eval, new Function, AND the hidden AsyncFunction / GeneratorFunction /
  *     AsyncGeneratorFunction constructors (reachable via (async()=>{}).constructor) — is NOT a Deno
  *     permission, so it never reaches the broker. This wrapper gates every codegen entry point through
@@ -28,7 +28,7 @@ installCodegenGate((scope) => {
 
 const target = Deno.args[0];
 
-if (!target) { console.error("usage: deno run enforcement/silo-deno.mjs <target> [args]"); Deno.exit(2); }
+if (!target) { console.error("usage: deno run enforce/silo-deno.mjs <target> [args]"); Deno.exit(2); }
 const href = target.startsWith("/") || target.includes("://")
 	? (target.includes("://") ? target : "file://" + target)
 	: new URL(target, "file://" + Deno.cwd() + "/").href;

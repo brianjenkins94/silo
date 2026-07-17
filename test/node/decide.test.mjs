@@ -1,5 +1,5 @@
 /**
- * Unit tests for the shared decision core (enforcement/decide.mjs): the redline matrix + JUDICIAL modes.
+ * Unit tests for the shared decision core (enforce/decide.mjs): the redline matrix + JUDICIAL modes.
  * Pure + fast — no subprocess except the BERNARD-env case (REDLINE is built once at import) and the
  * JUDICIAL command mode (which spawns a judge).
  */
@@ -7,16 +7,17 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { it } from "vitest";
-import { judicial, redline } from "../../enforcement/decide.mjs";
+import { it } from "node:test";
+import { judicial, redline } from "../../enforce/decide.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const DECIDE = path.join(HERE, "../../enforcement/decide.mjs");
+const DECIDE = path.join(HERE, "../../enforce/decide.mjs");
 const JUDGE = path.join(HERE, "fixtures/judge.mjs");
 
 it("redline: catastrophic scopes are flagged", () => {
 	for (const s of [
 		"fs:write:/Users/x/.ssh/id_rsa",            // credentials
+		"fs:read:/Users/x/.ssh/id_rsa",             // reading a secret is the exfiltration vector — redlined too
 		"fs:write:/home/x/.aws/credentials",
 		"fs:write:/Users/x/.npmrc",
 		"fs:write:/Users/x/project/.git/config",    // git internals
@@ -38,7 +39,7 @@ it("redline: catastrophic scopes are flagged", () => {
 
 it("redline: benign scopes pass", () => {
 	for (const s of [
-		"fs:read:/Users/x/.ssh/id_rsa",             // only WRITE to creds is redline
+		"fs:read:/Users/x/project/src/a.ts",        // reading ordinary source is fine
 		"fs:write:/tmp/x",
 		"fs:write:/Users/x/project/src/a.ts",
 		"exec:node",

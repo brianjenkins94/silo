@@ -2,17 +2,17 @@
  * PROTOTYPE — silo's QUALITY/REVIEW axis (sibling to the capability axis; two columns, one engine).
  * A per-UNIT trust vector from cheap static signals — no runtime, no transform yet.
  *
- * A UNIT is a FUNCTION, not a file: `analysis/package-capabilities.ts#builtinCaps`. Function-level is
+ * A UNIT is a FUNCTION, not a file: `detect/package-capabilities.ts#builtinCaps`. Function-level is
  * what makes the hash anchor useful — editing one function no longer stales your review of everything
  * else in the file. Every byte belongs to exactly one unit: each top-level function / arrow-const /
  * class method, plus a synthetic `#<module>` unit per file holding the leftover top-level glue
  * (imports, constants, side-effect code). Function-level also lines up 1:1 with where the runtime
- * guard sits (enforcement/guard) — a guard site IS a unit boundary.
+ * guard sits (enforce/guard) — a guard site IS a unit boundary.
  *
  *   - understood — reviewed at the unit's CURRENT hash? Hash-anchored, so a review goes `stale` the
  *                  instant that unit's source changes. Backward movement is automatic.
  *   - clean      — lint errors/warnings whose line falls inside the unit's span.
- *   - origin     — AI-authorship verdict (reuses analysis/provenance). FILE-level, attributed to each
+ *   - origin     — AI-authorship verdict (reuses provenance.ts). FILE-level, attributed to each
  *                  unit in it (coarse — a per-function refinement is possible, provenance already
  *                  detects doc-blocks per declaration).
  *   - verified   — the guard socket. UNPLUGGED → `—`; phase-1b (the transform) fills it.
@@ -29,9 +29,14 @@ import { createHash } from "node:crypto";
 import * as fs from "@brianjenkins94/util/fs";
 import * as path from "node:path";
 import { parseSync } from "oxc-parser";
-import { analyzeFile } from "./analysis/provenance.js";
+import { analyzeFile } from "../shared/provenance.js";
 
-const ROOT = execSync("git rev-parse --show-toplevel", { "encoding": "utf8" }).trim();
+// ROOT anchors the review store and every git-scoped query. Outside a git repo (a scratch dir, a test
+// fixture) there's no history to diff against, so fall back to cwd rather than crashing the whole CLI at
+// import: the capability gate still runs; the quality axis is simply empty (nothing tracked to review).
+const ROOT = (() => {
+	try { return execSync("git rev-parse --show-toplevel", { "encoding": "utf8", "stdio": ["ignore", "pipe", "ignore"] }).trim(); } catch { return process.cwd(); }
+})();
 const STORE = path.join(ROOT, ".silo", "review.json");
 const TOP = 20;   // queue rows to show (there are far more units than files)
 
@@ -73,7 +78,11 @@ async function saveStore(store: ReviewStore): Promise<void> {
 function sourceFiles(): string[] {
 	// .mjs/.cjs matter most here: silo's enforcement brokers (capability-broker, preload, decide) ARE the
 	// security-critical code — excluding them made exactly the code that enforces the boundary unreviewable.
-	return execSync("git ls-files '*.ts' '*.tsx' '*.mjs' '*.cjs' '*.js'", { "cwd": ROOT, "encoding": "utf8" })
+	let tracked: string;
+
+	try { tracked = execSync("git ls-files '*.ts' '*.tsx' '*.mjs' '*.cjs' '*.js'", { "cwd": ROOT, "encoding": "utf8", "stdio": ["ignore", "pipe", "ignore"] }); } catch { return []; }   // non-git → nothing tracked to review
+
+	return tracked
 		.split("\n")
 		.filter(Boolean)
 		.filter((f) => !f.startsWith("test/") && !f.includes("node_modules"));
@@ -104,7 +113,7 @@ function lineAt(starts: number[], offset: number): number {
 }
 
 /** Top-level functions / arrow-consts / class methods, with their source spans. Mirrors the declaration
- *  shapes analysis/provenance.ts already recognises. */
+ *  shapes provenance.ts already recognises. */
 function spans(file: string, src: string): { "name": string; "start": number; "end": number }[] {
 	const { program } = parseSync(file, src) as any;
 	const out: { "name": string; "start": number; "end": number }[] = [];
@@ -245,7 +254,7 @@ export function reviewUnits(): Scored[] {
 }
 
 /** Worst review state per FILE (unreviewed ≻ stale ≻ reviewed) — what baseline joins onto its dep rows. */
-export function fileStates(rows: Scored[]): Map<string, Understood> {
+export function fileStates(rows: readonly { "file": string; "understood": Understood }[]): Map<string, Understood> {
 	const rank: Record<Understood, number> = { "unreviewed": 3, "stale": 2, "waived": 1, "reviewed": 0 };
 	const out = new Map<string, Understood>();
 
@@ -256,6 +265,37 @@ export function fileStates(rows: Scored[]): Map<string, Understood> {
 	}
 
 	return out;
+}
+
+/** A unit's review state ONLY (no lint / origin). */
+export interface UnitState { "id": string; "file": string; "hash": string; "understood": Understood }
+
+/** unreviewed (never signed) ≻ stale (signed, then edited) ≻ waived (accepted unread) ≻ reviewed (read). */
+function understoodOf(rec: ReviewRecord | undefined, hash: string): Understood {
+	return rec === undefined ? "unreviewed" : rec.hash !== hash ? "stale" : rec.waived === true ? "waived" : "reviewed";
+}
+
+/** Units + understood state, WITHOUT score()'s eslint pass (that pass is only for the lint columns). The
+ *  cheap inputs the runner's escalation feeds to gateUnits — reviewUnits() would spawn `npx eslint .`. */
+export function reviewStates(): UnitState[] {
+	const store = loadStore();
+	const out: UnitState[] = [];
+
+	for (const file of sourceFiles()) {
+		for (const u of unitsOf(file)) { out.push({ "id": u.id, "file": u.file, "hash": u.hash, "understood": understoodOf(store[u.id], u.hash) }); }
+	}
+
+	return out;
+}
+
+// THE TRUST RATCHET, diff-scoped: every capability-bearing unit THIS CHANGE TOUCHED must be reviewed (or
+// consciously waived). Not "you have debt" (people disable that within a week) — "you made it worse". No
+// stored count: an aggregate merges to a silently-wrong number when two devs each add one; git holds the
+// history, so ask it. Diff-scoping is fairer too (you answer only for what you touched).
+/** Touched, capability-bearing (exposed), and neither reviewed nor waived. Generic so callers keep their row
+ *  type — full Scored from the audit flow, light UnitState from the runner. */
+export function gateUnits<T extends { "id": string; "file": string; "understood": Understood }>(review: readonly T[], exposed: Set<string>, touched: Set<string>): T[] {
+	return review.filter((u) => touched.has(u.id) && exposed.has(u.file) && u.understood !== "reviewed" && u.understood !== "waived");
 }
 
 /** Record the human sign-off for a unit (`file#fn`) or every unit in a file. Returns what it marked. */
@@ -293,7 +333,7 @@ function score(store: ReviewStore): Scored[] {
 				? msgs.filter((m) => m.line >= unit.startLine && m.line <= unit.endLine)
 				: msgs.filter((m) => !inSomeFn(m.line));   // `#<module>` gets everything outside a function
 			const rec = store[unit.id];
-			const understood: Understood = rec === undefined ? "unreviewed" : rec.hash !== unit.hash ? "stale" : rec.waived === true ? "waived" : "reviewed";
+			const understood = understoodOf(rec, unit.hash);
 			const errors = mine.filter((m) => m.severity === 2).length;
 			const warnings = mine.filter((m) => m.severity === 1).length;
 			const origin = origins.get(file) ?? "clean";
@@ -310,11 +350,11 @@ function score(store: ReviewStore): Scored[] {
 	return rows.sort((a, b) => b.priority - a.priority || b.errors - a.errors || a.id.localeCompare(b.id));
 }
 
-/** The quality-axis section: the queue head + the spectrum summary. Printed by `silo baseline`. */
+/** The quality-axis section: the queue head + the spectrum summary. Printed by bare `silo`. */
 export function printReview(rows: Scored[]): void {
 	const dot = { "reviewed": "●", "stale": "◐", "unreviewed": "○" };
 	const shown = rows.slice(0, TOP);
-	const w = Math.max(...shown.map((r) => r.id.length));
+	const w = Math.max("unit".length, ...shown.map((r) => r.id.length));   // seed: empty list → no -Infinity
 
 	console.log(`\n  ${"unit".padEnd(w)}  rev  lint    origin    verified`);
 	console.log(`  ${"-".repeat(w)}  ---  ------  --------  --------`);
@@ -334,7 +374,7 @@ export function printReview(rows: Scored[]): void {
 }
 
 // Dev CLI (silo convention — provenance.ts / package-capabilities.ts do the same). The REAL surface is
-// `silo baseline`, which imports this module; guarded so importing it never runs anything.
+// bare `silo` (the two-sided baseline), which imports this module; guarded so importing it never runs anything.
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const target = process.argv[2];
 

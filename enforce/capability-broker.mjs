@@ -1,5 +1,5 @@
 /**
- * PROTOTYPE — enforcing capability broker (injected into the bundle by instrument.ts, runs first).
+ * PROTOTYPE — enforcing capability broker (injected into the bundle by box.ts, runs first).
  *
  * Gates net (async prompt), fs and exec (SYNC prompt via readSync(0) — sync builtins can't await).
  * Allowlists come from env (set by `run` from the registry's approved scopes); a grant is TOFU for the

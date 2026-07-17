@@ -7,7 +7,7 @@
  * it yields the call *path*. Requires a typed Program — unresolved callees produce no edge, so a
  * real impl must flag them; here we just rely on a tsconfig that resolves @types/node.
  *
- * Run: ./node_modules/.bin/tsx scripts/engines/static-caps-lsp.ts <targetFile>
+ * Run: ./node_modules/.bin/tsx detect/static-lsp.ts <targetFile>
  */
 import { spawn } from "node:child_process";
 import * as fs from "@brianjenkins94/util/fs";
@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");   // silo's own install — only to locate tsgo
-const fileArg = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? "engines/static-caps-lsp.ts";
+const fileArg = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? "detect/static-lsp.ts";
 const FILE = path.isAbsolute(fileArg) ? fileArg : path.resolve(process.cwd(), fileArg);
 const JSON_MODE = process.argv.includes("--json");
 const URI = "file://" + FILE;
@@ -149,7 +149,7 @@ async function reach(item: any, visited: Set<string>, trail: string[], found: { 
 
 	if (madeTsconfig) { fs.writeFileSync(tsc, JSON.stringify({ "compilerOptions": { "module": "nodenext", "moduleResolution": "nodenext", "types": ["node"], "typeRoots": ["node_modules/@types"], "noEmit": true }, "include": ["**/*.ts"] }, null, 2)); }
 	try {
-		await request("initialize", { "processId": process.pid, "rootUri": "file://" + PROJECT, "workspaceFolders": [{ "uri": "file://" + PROJECT, "name": path.basename(PROJECT) }], "capabilities": { "textDocument": { "callHierarchy": {}, "documentSymbol": { "hierarchicalDocumentSymbolSupport": true } } }, "clientInfo": { "name": "static-caps-lsp", "version": "0" } });
+		await request("initialize", { "processId": process.pid, "rootUri": "file://" + PROJECT, "workspaceFolders": [{ "uri": "file://" + PROJECT, "name": path.basename(PROJECT) }], "capabilities": { "textDocument": { "callHierarchy": {}, "documentSymbol": { "hierarchicalDocumentSymbolSupport": true } } }, "clientInfo": { "name": "static-lsp", "version": "0" } });
 		notify("initialized", {});
 		notify("textDocument/didOpen", { "textDocument": { "uri": URI, "languageId": "typescript", "version": 1, "text": fs.readFileSync(FILE) } });
 		await new Promise((r) => setTimeout(r, 900));

@@ -3,7 +3,7 @@
  * rewritten to brokered wrappers, so every capability call (net via the broker prelude, fs/exec via
  * the rewritten imports) is gated. Bundling is the only place to wrap builtin named imports uniformly.
  *
- *   tsx enforcement/instrument.ts <script> <outfile>
+ *   tsx enforce/box.ts <script> <outfile>
  *
  * The brokered wrapper enumerates the real module's exports at build time, wraps the capability-
  * bearing ones with a gate, and passes the rest through (so arbitrary imports still resolve). The
@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const esbuild = require("esbuild");
    // by name → resolves from deps in dev (tsx) and in the built dist
-const BROKER = path.join(ROOT, "enforcement/capability-broker.mjs");
+const BROKER = path.join(ROOT, "enforce/capability-broker.mjs");
 
 const CAP_FS: Record<string, "read" | "write"> = {
 	"readFileSync": "read",

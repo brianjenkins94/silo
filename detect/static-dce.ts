@@ -6,16 +6,16 @@
  * capabilities by *usage* in the surviving code. DCE removes unreachable function bodies, so a
  * capability call only appears if E transitively reaches it.
  *
- * Run: ./node_modules/.bin/tsx scripts/engines/static-caps-dce.ts [targetFile]
+ * Run: ./node_modules/.bin/tsx detect/static-dce.ts [targetFile]
  */
 import * as fs from "@brianjenkins94/util/fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { detect } from "../vocabulary/capability-detectors.js";
+import { detect } from "./capability-detectors.js";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const VITE = path.join(ROOT, "node_modules/vite/dist/node/index.js");
-const target = path.resolve(process.argv[2] ?? path.join(ROOT, "engines/static-caps-dce.ts"));
+const target = path.resolve(process.argv[2] ?? path.join(ROOT, "detect/static-dce.ts"));
 
 // capabilities are detected by the shared core (capability-detectors.ts), run against the tree-shaken text.
 

@@ -1,23 +1,25 @@
 /**
- * Integration: the CI capability gate (`silo audit --ci`) — the engine behind the GitHub Action.
+ * Integration: the CI capability gate (`CI=true silo audit`) — the engine behind the GitHub Action.
  * Fully offline: a builtin-only fixture project, so consumer analysis uses builtinCaps (no network) and
  * `audit` skips the node_modules pass. Asserts the three gate outcomes: no baseline → fail, no drift →
  * pass, capability expansion → fail (with the GitHub ::error annotation under GITHUB_ACTIONS).
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { it } from "vitest";
+import { it } from "node:test";
 import { ROOT } from "./_helpers.mjs";
 
 const TSX = path.join(ROOT, "node_modules/.bin/tsx");
 const CLI = path.join(ROOT, "cli.ts");
 
-/** Run `silo <args>` with cwd = a throwaway project dir. */
+/** Run `silo <args>` with cwd = a throwaway project dir. Blanks CI/GITHUB_ACTIONS in the base env so the
+ *  gate is armed ONLY by what a test passes (the suite itself runs under CI=true, which would otherwise
+ *  turn every baseline-writing call into a gate). */
 function silo(cwd, args, env = {}) {
-	const r = spawnSync(TSX, [CLI, ...args], { "cwd": cwd, "encoding": "utf8", "env": { ...process.env, "NODE_OPTIONS": "", ...env } });
+	const r = spawnSync(TSX, [CLI, ...args], { "cwd": cwd, "encoding": "utf8", "env": { ...process.env, "NODE_OPTIONS": "", "CI": "", "GITHUB_ACTIONS": "", ...env } });
 
 	return { "status": r.status ?? 1, "stdout": r.stdout ?? "", "stderr": r.stderr ?? "" };
 }
@@ -31,11 +33,19 @@ function project(sourceLines) {
 	return dir;
 }
 
+/** Drop / detect the Family-C breadcrumb cooldown would leave (`.silo/` must already exist, i.e. after a
+ *  first audit wrote the baseline). */
+const MARKER = (dir) => path.join(dir, ".silo", "pending-review.json");
+function dropMarker(dir) {
+	writeFileSync(MARKER(dir), JSON.stringify({ "at": "2026-07-17T00:00:00.000Z", "reason": "cooldown install", "cooldownDays": 7, "lockBefore": "aaaaaaaaaaaa", "lockAfter": "bbbbbbbbbbbb" }));
+}
+const hasMarker = (dir) => existsSync(MARKER(dir));
+
 it("cI gate: no committed baseline → fail (with GitHub annotation)", () => {
 	const dir = project(`import { readFileSync } from "node:fs";\nreadFileSync("x");\n`);
 
 	try {
-		const r = silo(dir, ["audit", ".", "--ci"], { "GITHUB_ACTIONS": "true" });
+		const r = silo(dir, ["audit", "."], { "CI": "true", "GITHUB_ACTIONS": "true" });
 
 		assert.equal(r.status, 1);
 		assert.match(r.stderr, /no committed baseline/);
@@ -50,7 +60,7 @@ it("cI gate: baseline present, no change → pass", () => {
 		const gen = silo(dir, ["audit", "."]);                 // first run writes the baseline
 
 		assert.equal(gen.status, 0, gen.stderr);
-		const r = silo(dir, ["audit", ".", "--ci"]);
+		const r = silo(dir, ["audit", "."], { "CI": "true" });
 
 		assert.equal(r.status, 0, r.stderr + r.stdout);
 		assert.match(r.stdout, /no capability drift/);
@@ -64,7 +74,7 @@ it("cI gate: capability expansion (new exec cap) → fail", () => {
 		assert.equal(silo(dir, ["audit", "."]).status, 0);     // baseline: fs:read only
 		writeFileSync(path.join(dir, "app.ts"),                // expand: add child_process (exec)
 			`import { readFileSync } from "node:fs";\nimport { execSync } from "node:child_process";\nreadFileSync("x"); execSync("ls");\n`);
-		const r = silo(dir, ["audit", ".", "--ci"]);
+		const r = silo(dir, ["audit", "."], { "CI": "true" });
 
 		assert.equal(r.status, 1);
 		assert.match(r.stderr, /un-approved capability change/);
@@ -85,7 +95,7 @@ it("cI gate: a nested private workspace is ignored (its caps don't count as drif
 
 		assert.equal(gen.status, 0, gen.stderr);
 		assert.doesNotMatch(gen.stdout, /exec/, "private subproject's exec cap must not leak into the root baseline");
-		const r = silo(dir, ["audit", ".", "--ci"]);
+		const r = silo(dir, ["audit", "."], { "CI": "true" });
 
 		assert.equal(r.status, 0, r.stderr + r.stdout);
 		assert.match(r.stdout, /no capability drift/);
@@ -134,14 +144,73 @@ it("audit does NOT flag a capability introduced by terse human-authored code", (
 	} finally { rmSync(dir, { "recursive": true, "force": true }); }
 });
 
-it("cI gate: --ci never rubber-stamps (ignores --approve)", () => {
+it("cI gate: the CI gate never rubber-stamps (ignores --approve)", () => {
 	const dir = project(`import { readFileSync } from "node:fs";\nreadFileSync("x");\n`);
 
 	try {
 		assert.equal(silo(dir, ["audit", "."]).status, 0);
 		writeFileSync(path.join(dir, "app.ts"), `import { execSync } from "node:child_process";\nexecSync("ls");\n`);
-		const r = silo(dir, ["audit", ".", "--ci", "--approve"]);   // --approve must NOT save under --ci
+		const r = silo(dir, ["audit", ".", "--approve"], { "CI": "true" });   // --approve must NOT save under CI
 
 		assert.equal(r.status, 1, "drift must still fail even with --approve passed in CI");
+	} finally { rmSync(dir, { "recursive": true, "force": true }); }
+});
+
+it("pending marker: a no-drift review announces the dep change and clears the marker", () => {
+	const dir = project(`import { readFileSync } from "node:fs";\nreadFileSync("x");\n`);
+
+	try {
+		assert.equal(silo(dir, ["audit", "."]).status, 0);   // baseline
+		dropMarker(dir);
+		const r = silo(dir, ["audit", "."]);
+
+		assert.equal(r.status, 0, r.stderr + r.stdout);
+		assert.match(r.stdout, /dependencies changed/);
+		assert.match(r.stdout, /nothing to re-review/);
+		assert.equal(hasMarker(dir), false, "marker must be cleared once the dep change is reviewed");
+	} finally { rmSync(dir, { "recursive": true, "force": true }); }
+});
+
+it("pending marker: un-approved drift KEEPS the marker (keeps escalating until approved)", () => {
+	const dir = project(`import { readFileSync } from "node:fs";\nreadFileSync("x");\n`);
+
+	try {
+		assert.equal(silo(dir, ["audit", "."]).status, 0);
+		writeFileSync(path.join(dir, "app.ts"), `import { execSync } from "node:child_process";\nexecSync("ls");\n`);
+		dropMarker(dir);
+		const r = silo(dir, ["audit", "."]);   // local, non-approve → drift fails
+
+		assert.equal(r.status, 1);
+		assert.match(r.stdout, /dependencies changed/);
+		assert.ok(hasMarker(dir), "un-approved drift must leave the marker in place");
+	} finally { rmSync(dir, { "recursive": true, "force": true }); }
+});
+
+it("pending marker: --approve accepts the new surface and clears the marker", () => {
+	const dir = project(`import { readFileSync } from "node:fs";\nreadFileSync("x");\n`);
+
+	try {
+		assert.equal(silo(dir, ["audit", "."]).status, 0);
+		writeFileSync(path.join(dir, "app.ts"), `import { execSync } from "node:child_process";\nexecSync("ls");\n`);
+		dropMarker(dir);
+		const r = silo(dir, ["audit", ".", "--approve"]);
+
+		assert.equal(r.status, 0, r.stderr + r.stdout);
+		assert.equal(hasMarker(dir), false, "approve must clear the marker");
+	} finally { rmSync(dir, { "recursive": true, "force": true }); }
+});
+
+it("pending marker: CI ignores it — gate result unchanged, marker untouched", () => {
+	const dir = project(`import { readFileSync } from "node:fs";\nreadFileSync("x");\n`);
+
+	try {
+		assert.equal(silo(dir, ["audit", "."]).status, 0);   // baseline, no drift
+		dropMarker(dir);
+		const r = silo(dir, ["audit", "."], { "CI": "true" });
+
+		assert.equal(r.status, 0, r.stderr + r.stdout);
+		assert.match(r.stdout, /no capability drift/);
+		assert.doesNotMatch(r.stdout, /dependencies changed/, "no escalation banner under CI");
+		assert.ok(hasMarker(dir), "CI must not clear the marker");
 	} finally { rmSync(dir, { "recursive": true, "force": true }); }
 });

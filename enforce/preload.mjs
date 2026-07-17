@@ -1,8 +1,8 @@
 /**
- * PROTOTYPE — runtime preload (the in-process alternative to instrument.ts's bundle-and-run box):
+ * PROTOTYPE — runtime preload (the in-process alternative to box.ts's bundle-and-run box):
  *
- *   node --import ./enforcement/preload.mjs <script>
- *   NODE_OPTIONS="--import /abs/enforcement/preload.mjs" node <anything>   # ambient gating
+ *   node --import ./enforce/preload.mjs <script>
+ *   NODE_OPTIONS="--import /abs/enforce/preload.mjs" node <anything>   # ambient gating
  *
  * Importing the broker activates net gating (globalThis.fetch override) + allowlist + JUDICIAL/BERNARD.
  * Then module.registerHooks (sync, CJS+ESM, Node ≥22.15) intercepts node:fs / node:child_process at

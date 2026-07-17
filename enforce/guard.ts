@@ -10,7 +10,7 @@
  *
  * The predicate is hand-written today; the design is for it to be GENERATED from the declared TS
  * type (typia et al.) and INJECTED at boundaries by a transform — this module is the runtime target
- * that transform emits calls to. Lives in silo (with enforcement/instrument.ts) until a second repo
+ * that transform emits calls to. Lives in silo (with enforce/box.ts) until a second repo
  * outside silo actually consumes it, at which point it earns a hoist to lib. See review-helper design.
  *
  * The sink is module-global for now (fine for a single run); a real deployment may want a per-context

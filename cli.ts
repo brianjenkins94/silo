@@ -7,17 +7,17 @@
  *   silo                      the two-sided baseline (own code + node_modules) + the trust ratchet
  *   silo audit                consumer side only
  *   silo <script> [args…]     fingerprint → gate → box → execute under the broker (runner.ts)
- *   silo ls                   list managed scripts
+ *   silo status               list managed scripts
  *   silo install [args…]      cooldown-aware install
  *   silo --reviewed <unit>    sign off a unit (I read it) · --waive <unit> (accepted unread)
  */
 import * as fs from "@brianjenkins94/util/fs";
 import { command, flag, group, optional, positional, run as runCli, string } from "@brianjenkins94/util/cmd";
-import { auditConsumer, auditPackages, type Baseline, loadBaseline, saveBaseline } from "./audit.js";
-import { flushFingerprints } from "./cache.js";
-import { BASELINE, PROJECT } from "./paths.js";
-import { baseRef, fileStates, markReviewed, printReview, reviewUnits, type Scored, touchedUnits } from "./review.js";
-import { installCmd, ls, run } from "./runner.js";
+import { auditConsumer, auditPackages, type Baseline, loadBaseline, saveBaseline } from "./commands/audit.js";
+import { flushFingerprints } from "./shared/cache.js";
+import { BASELINE, clearPending, PROJECT, readPending } from "./shared/paths.js";
+import { baseRef, fileStates, gateUnits, markReviewed, printReview, reviewUnits, touchedUnits } from "./commands/review.js";
+import { installCmd, run, status } from "./commands/runner.js";
 
 /** Fail the gate. In GitHub Actions also emit a workflow error annotation (shows inline on the PR). */
 function gateFail(msg: string): never {
@@ -26,23 +26,15 @@ function gateFail(msg: string): never {
 	process.exit(1);
 }
 
-// THE TRUST RATCHET, diff-scoped: every capability-bearing unit THIS CHANGE TOUCHED must be reviewed (or
-// consciously waived). Not "you have debt" (people disable that within a week) — "you made it worse". And
-// no stored count: an aggregate merges to a silently-wrong number when two devs each add one; git already
-// holds the history, so ask it. Diff-scoping is also fairer (you answer only for what you touched).
-/** Units this change touched that reach a dangerous capability and are neither reviewed nor waived. */
-function gateUnits(review: Scored[], exposed: Set<string>, touched: Set<string>): Scored[] {
-	return review.filter((u) => touched.has(u.id) && exposed.has(u.file) && u.understood !== "reviewed" && u.understood !== "waived");
-}
-
-/** `silo` / `silo baseline [dir] [--approve|--ci]` — the two-sided safety baseline (own code + node_modules).
- *  --ci: non-interactive gate for CI — never writes/approves; fails on un-approved drift or unreviewed
- *  capability-bearing changes. The drop-in for the Silo GitHub Action. */
+/** `silo [dir] [--approve]` — the two-sided safety baseline (own code + node_modules). Arms as a
+ *  non-interactive gate when `CI` is set (GitHub Actions et al.), e.g. `CI=true silo audit`: never
+ *  writes/approves; fails on un-approved drift or unreviewed capability-bearing changes. The drop-in
+ *  for the Silo GitHub Action. */
 async function baseline(args: string[], consumerOnly = false) {
-	const ci = args.includes("--ci");
+	const ci = /^(1|true)$/iu.test(process.env["CI"] ?? "");   // CI gate arms off $CI — there is no `--ci` flag
 	const approve = !ci && args.includes("--approve");
 	const target = args.find((a) => !a.startsWith("--")) ?? PROJECT;   // default: the resolved root
-	const cmd = consumerOnly ? "audit" : "baseline";
+	const self = consumerOnly ? "silo audit" : "silo";
 	const fresh = !fs.existsSync(BASELINE);
 	const b = loadBaseline();
 
@@ -61,8 +53,19 @@ async function baseline(args: string[], consumerOnly = false) {
 		return;
 	}
 
-	console.log(`▶ silo ${cmd}${ci ? " --ci" : ""} — ${PROJECT}\n`);
-	if (ci && fresh) { gateFail(`no committed baseline — expected .silo/baseline.json. Run \`silo ${cmd}\` locally and commit it.`); }
+	// FAMILY-C ESCALATION: cooldown left a breadcrumb that deps moved since the last approve. Reframe this
+	// run as "review the new surface" and clear it once handled (below). Ignored under CI — there the drift
+	// check IS the gate, and the marker is just noise from the workflow's own install step.
+	const pending = ci ? null : readPending();
+
+	console.log(`▶ ${self}${ci ? " (CI gate)" : ""} — ${PROJECT}\n`);
+	if (pending) {
+		const moved = pending.lockBefore ? `${pending.lockBefore} → ${pending.lockAfter}` : pending.lockAfter;
+
+		console.log(`  ⚠ dependencies changed — ${pending.reason} on ${pending.at.slice(0, 10)} (lock ${moved}).`);
+		console.log(`    Reviewing the new capability surface below; re-approve (\`${self} --approve\`) if it's expected.\n`);
+	}
+	if (ci && fresh) { gateFail(`no committed baseline — expected .silo/baseline.json. Run \`${self}\` locally and commit it.`); }
 
 	// Compute the QUALITY axis once; auditConsumer joins it per-dep-row, then we print the spectrum + ratchet.
 	const review = reviewUnits();
@@ -92,7 +95,7 @@ async function baseline(args: string[], consumerOnly = false) {
 	if (process.env["GITHUB_ACTIONS"] === "true" && gated.length) { console.log(`::notice title=Silo trust::${trustLine.replace(/\*/gu, "")}`); }
 
 	if (ci) {
-		if (drift) { gateFail(`${drift} un-approved capability change(s) vs .silo/baseline.json. If intended, run \`silo ${cmd} --approve\` locally and commit the updated baseline.`); }
+		if (drift) { gateFail(`${drift} un-approved capability change(s) vs .silo/baseline.json. If intended, run \`${self} --approve\` locally and commit the updated baseline.`); }
 		if (gated.length) {
 			gateFail(`trust ratchet: this change touched ${gated.length} capability-bearing unit(s) you haven't read:\n${gated.map((u) => `      ${u.id}`).join("\n")}\n    Review them (\`silo --reviewed <file>#<fn>\`), or take the debt knowingly (\`silo --waive <file>#<fn>\`) — a waiver is recorded as "accepted without reading".`);
 		}
@@ -102,40 +105,38 @@ async function baseline(args: string[], consumerOnly = false) {
 		return;
 	}
 
-	if (fresh) { await saveBaseline(b); console.log(`\n  ✓ baseline written to .silo/baseline.json — commit it; re-run gates drift.`); return; }
+	// Each "handled" exit clears the Family-C marker; un-approved drift (below) deliberately KEEPS it, so the
+	// dep change keeps escalating until you review + approve it.
+	if (fresh) { await saveBaseline(b); if (pending) { await clearPending(); } console.log(`\n  ✓ baseline written to .silo/baseline.json — commit it; re-run gates drift.`); return; }
 
 	// `--approve` persists the CAPABILITY fingerprints and nothing else — the quality axis's state lives
 	// per-unit in the review ledger, so there is no aggregate to approve.
-	if (approve) { await saveBaseline(b); console.log("\n  ✓ capability baseline approved — baseline updated"); return; }
+	if (approve) { await saveBaseline(b); if (pending) { await clearPending(); } console.log("\n  ✓ capability baseline approved — baseline updated"); return; }
 
-	if (drift) { console.log(`\n  ⚠ ${drift} un-approved change(s). Review, then \`silo ${cmd} --approve\`.`); process.exit(1); }
+	if (drift) { console.log(`\n  ⚠ ${drift} un-approved change(s). Review, then \`${self} --approve\`.`); process.exit(1); }
+	if (pending) { await clearPending(); console.log("\n  ✓ dependencies changed, but your capability surface is unchanged — nothing to re-review."); return; }
 	console.log("\n  ✓ no drift — baseline holds");
 }
 
-// CLI surface via @brianjenkins94/util/cmd (cmd-ts). silo's shape is subcommands + a DEFAULT (bare /
-// flags-only → baseline) + a script CATCH-ALL (`silo <path>` → run), which cmd-ts's strict subcommands
-// don't model — so the structured subcommands go through cmd-ts and the rest is routed by hand.
-function gate(consumerOnly: boolean) {
-	return command({
-		"name": consumerOnly ? "audit" : "baseline",
+// CLI surface via @brianjenkins94/util/cmd (cmd-ts). silo's shape is two structured subcommands
+// (`audit`, `status`) + a DEFAULT (bare / flags-only → the two-sided baseline) + a script CATCH-ALL
+// (`silo <path>` → run), which cmd-ts's strict subcommands don't model — so the structured subcommands
+// go through cmd-ts and the rest is routed by hand. There is no `--ci` flag: the gate arms off `$CI`.
+const app = group("silo", {
+	"status": command({ "name": "status", "args": {}, "handler": async () => { status(); } }),
+	"audit": command({
+		"name": "audit",
 		"args": {
 			"dir": positional({ "type": optional(string), "displayName": "dir" }),
-			"approve": flag({ "long": "approve" }),
-			"ci": flag({ "long": "ci" })
+			"approve": flag({ "long": "approve" })
 		},
-		"handler": async ({ dir, approve, ci }) => baseline([...(dir ? [dir] : []), ...(approve ? ["--approve"] : []), ...(ci ? ["--ci"] : [])], consumerOnly)
-	});
-}
-
-const app = group("silo", {
-	"ls": command({ "name": "ls", "args": {}, "handler": async () => { ls(); } }),
-	"audit": gate(true),
-	"baseline": gate(false)
+		"handler": async ({ dir, approve }) => baseline([...(dir ? [dir] : []), ...(approve ? ["--approve"] : [])], true)
+	})
 });
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
 
-if (!cmd || cmd.startsWith("-")) { await baseline(argv); }                  // bare `silo` / `silo --approve` / `--ci`
+if (!cmd || cmd.startsWith("-")) { await baseline(argv); }                  // bare `silo` / `silo --approve` (CI gate when $CI is set)
 else if (cmd === "install" || cmd === "i") { installCmd(argv.slice(1)); }   // passthrough → cooldown install
-else if (cmd === "ls" || cmd === "audit" || cmd === "baseline") { await runCli(app, { "argv": argv, "exit": false }); } else { await run(cmd, argv.slice(1)); }   // `silo <script> [args…]` → the runner
+else if (cmd === "status" || cmd === "audit") { await runCli(app, { "argv": argv, "exit": false }); } else { await run(cmd, argv.slice(1)); }   // `silo <script> [args…]` → the runner

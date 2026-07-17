@@ -14,10 +14,10 @@
     "provenance": true
   },
   "scripts": {
-    "preinstall": "node policy/cooldown.mjs",
+    "preinstall": "node install/cooldown.mjs",
     "silo": "tsx cli.ts",
-    "caps": "tsx engines/static-caps-lsp.ts",
-    "caps:proto": "tsx engines/static-caps-dce.ts",
+    "caps": "tsx detect/static-lsp.ts",
+    "caps:proto": "tsx detect/static-dce.ts",
     "policy": "tsx policy/import-policy.ts",
     "lint": "util-lint",
     "test": "node --test \"test/node/*.test.mjs\" && npm run test:deno",

@@ -15,7 +15,7 @@
           "uses": "actions/setup-node@v4",
           "with": { "node-version": 22 }
         },
-        # No committed lockfile; the preinstall hook (policy/cooldown.mjs) cools every install.
+        # No committed lockfile; the preinstall hook (install/cooldown.mjs) cools every install.
         { "run": "npm install --no-audit --no-fund" },
         { "name": "Node test suite", "run": "npm run test:node" },
         {

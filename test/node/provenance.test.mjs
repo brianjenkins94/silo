@@ -1,5 +1,5 @@
 /**
- * The AI-provenance heuristic (analysis/provenance.ts). Structural signal = doc-comment COVERAGE: the
+ * The AI-provenance heuristic (provenance.ts). Structural signal = doc-comment COVERAGE: the
  * fraction of a file's functions carrying a non-JSDoc doc comment (AI documents nearly all; humans
  * selectively). Plus explicit attribution markers. Run via the CLI's --json mode on throwaway fixtures.
  */
@@ -8,11 +8,11 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { it } from "vitest";
+import { it } from "node:test";
 import { ROOT } from "./_helpers.mjs";
 
 const TSX = path.join(ROOT, "node_modules/.bin/tsx");
-const ENGINE = path.join(ROOT, "analysis/provenance.ts");
+const ENGINE = path.join(ROOT, "shared/provenance.ts");
 
 /** Write `src` to a temp file and return its provenance verdict (CLI --json, single-file target). */
 function provenance(src, name = "f.ts") {

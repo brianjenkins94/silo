@@ -1,5 +1,5 @@
 /**
- * Integration: the BOX runner (instrument.ts bundles the broker in; node runs the bundle). Covers every
+ * Integration: the BOX runner (box.ts bundles the broker in; node runs the bundle). Covers every
  * gate — fs read/write, exec, net, eval — across allow (allowlist / JUDICIAL) vs deny vs BERNARD redline.
  * No TTY in the test child, so redline scopes fail CLOSED (which is the property we want to assert).
  */
@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { it } from "vitest";
+import { it } from "node:test";
 import { box } from "./_helpers.mjs";
 
 const TMP = mkdtempSync(path.join(tmpdir(), "silo-box-"));

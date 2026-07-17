@@ -1,22 +1,22 @@
 /**
- * The CAPABILITY axis — the two-sided supply-chain audit that backs `silo baseline`:
+ * The CAPABILITY axis — the two-sided supply-chain audit that backs bare `silo` (the two-sided baseline):
  *   • auditConsumer — your OWN code: which members of each dep you import + what that reaches, per
  *     workspace, joined with provenance + review state (the two-axis marker).
  *   • auditPackages — your NODE_MODULES: each direct dependency's whole-package fingerprint, catching
  *     drift even in deps your code never imports (install/import-time payloads).
  * Both diff against the committed baseline and return a drift count; the caller gates on it.
  */
-import type { SurfaceEntry } from "./analysis/import-surface.js";
-import type { Verdict } from "./analysis/provenance.js";
-import type { Understood } from "./review.js";
+import type { SurfaceEntry } from "../detect/import-surface.js";
+import type { Verdict } from "../shared/provenance.js";
+import { baseRef, fileStates, gateUnits, reviewStates, touchedUnits, type Understood, type UnitState } from "./review.js";
 import * as fs from "@brianjenkins94/util/fs";
 import * as path from "node:path";
-import { classify, workspaceImporters, workspaceSurfaces } from "./analysis/import-surface.js";
-import { builtinCaps, capsOf, wholePackageCaps } from "./analysis/package-capabilities.js";
-import { analyzeFile, gitCoauthoredFiles } from "./analysis/provenance.js";
-import { fingerprint } from "./cache.js";
-import { BASELINE, ensureSiloDir, PROJECT } from "./paths.js";
-import { isDangerous } from "./policy/capability-policy.js";
+import { classify, workspaceImporters, workspaceSurfaces } from "../detect/import-surface.js";
+import { builtinCaps, capsOf, wholePackageCaps } from "../detect/package-capabilities.js";
+import { analyzeFile, gitCoauthoredFiles } from "../shared/provenance.js";
+import { fingerprint, flushFingerprints } from "../shared/cache.js";
+import { BASELINE, ensureSiloDir, PROJECT } from "../shared/paths.js";
+import { isDangerous } from "../policy/capability-policy.js";
 
 interface DepEntry { "kind": string; "version"?: string; "members": string[]; "dynamic": boolean; "caps": string[] }
 type WsConsumer = Record<string, DepEntry>;   // spec → dep, for one workspace
@@ -169,4 +169,34 @@ export async function auditPackages(b: Baseline): Promise<number> {
 	b.packages = next;
 
 	return drift;
+}
+
+/** Project capability drift vs the committed baseline — the two-sided count bare `silo` gates on, PLUS the
+ *  trust-ratchet units (`gated`: touched, capability-bearing, unreviewed), packaged for the runner to ride
+ *  ahead of a script. Uses reviewStates() (lint-free) so it never spawns eslint. `fresh` = no baseline yet
+ *  → nothing to gate against (defer to onboarding, not a block). */
+export async function capabilityDrift(target: string, consumerOnly = false): Promise<{ "drift": number; "fresh": boolean; "gated": UnitState[] }> {
+	if (!fs.existsSync(BASELINE)) { return { "drift": 0, "fresh": true, "gated": [] }; }
+	const b = loadBaseline();
+	const review = reviewStates();
+	const exposed = new Set<string>();
+	const drift = (await auditConsumer(b, target, fileStates(review), exposed)) + (consumerOnly ? 0 : await auditPackages(b));
+
+	await flushFingerprints();
+
+	return { "drift": drift, "fresh": false, "gated": gateUnits(review, exposed, touchedUnits(baseRef())) };
+}
+
+/** First-run onboarding: no committed baseline yet, so accept the CURRENT two-sided surface as the starting
+ *  point (the same TOFU bare `silo` does on a fresh project) and write it. auditConsumer/auditPackages PRINT
+ *  the surface as they compute it, so it's seen — not silently stamped. The trust ratchet still governs every
+ *  later expansion; this only sets the capability starting line. */
+export async function establishBaseline(target: string): Promise<void> {
+	const b = loadBaseline();
+	const exposed = new Set<string>();
+
+	await auditConsumer(b, target, new Map<string, Understood>(), exposed);
+	await auditPackages(b);
+	await flushFingerprints();
+	await saveBaseline(b);
 }

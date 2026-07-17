@@ -1,7 +1,7 @@
 /**
  * PROTOTYPE — `package-capabilities`: capability of the SLICE of a package you actually use.
  *
- *   tsx analysis/package-capabilities.ts <pkg> [member,member…] [--json]
+ *   tsx detect/package-capabilities.ts <pkg> [member,member…] [--json]
  *
  * Bundles the INSTALLED package (externalizing only node: builtins) with rolldown, rooted at the
  * given named exports — so detected caps are "what the parts of the package I import can reach",
@@ -14,10 +14,10 @@
 import * as fs from "@brianjenkins94/util/fs";
 import * as path from "node:path";
 import { rolldown } from "rolldown";
-import { detect, refine } from "../vocabulary/capability-detectors.js";
+import { detect, refine } from "./capability-detectors.js";
 import { deobfuscate, isLikelyBundled, resolveEntry } from "./deobfuscate.js";
 
-export { detect } from "../vocabulary/capability-detectors.js";
+export { detect } from "./capability-detectors.js";
 
 /** The specifier(s) to probe for a WHOLE-package fingerprint.
  *

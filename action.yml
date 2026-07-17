@@ -41,13 +41,16 @@
         "working-directory": "${{ github.action_path }}",
         "run": "npm install --no-audit --no-fund --no-package-lock"
       },
-      # GITHUB_ACTIONS=true is set by the runner, so cli.ts emits ::error annotations on failure.
+      # CI=true (set by the runner) arms the non-interactive gate; GITHUB_ACTIONS=true makes cli.ts emit
+      # ::error annotations on failure. mode=baseline → bare `silo` (two-sided); mode=audit → `silo audit`
+      # (own code only). There is no `baseline` subcommand, so baseline passes NO mode arg.
       # NOTE: for mode=baseline the consumer must install its own node_modules BEFORE this step.
       {
         "name": "Capability gate",
         "shell": "bash",
         "working-directory": "${{ inputs.working-directory }}",
-        "run": "\"${{ github.action_path }}/node_modules/.bin/tsx\" \"${{ github.action_path }}/cli.ts\" \"${{ inputs.mode }}\" \"${{ inputs.path }}\" --ci"
+        "env": { "CI": "true" },
+        "run": "MODE=\"\"; [ \"${{ inputs.mode }}\" = \"audit\" ] && MODE=\"audit\"; \"${{ github.action_path }}/node_modules/.bin/tsx\" \"${{ github.action_path }}/cli.ts\" $MODE \"${{ inputs.path }}\""
       }
     ]
   }

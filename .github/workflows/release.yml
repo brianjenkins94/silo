@@ -30,7 +30,7 @@
           }
         },
         # Installs @brianjenkins94/util (→ the util-publish bin) + silo's deps; the preinstall hook
-        # (policy/cooldown.mjs) applies the release-age floor to every install.
+        # (install/cooldown.mjs) applies the release-age floor to every install.
         { "run": "npm install --no-audit --no-fund" },
         # util-publish builds silo from source (vite), derives exports/files, preserves the `silo` bin,
         # ships the .mjs helpers, and publishes to npm when NPM_TOKEN is present.

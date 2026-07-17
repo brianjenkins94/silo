@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { it } from "vitest";
+import { it } from "node:test";
 import { preload } from "./_helpers.mjs";
 
 const TMP = mkdtempSync(path.join(tmpdir(), "silo-pre-"));

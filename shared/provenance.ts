@@ -14,7 +14,7 @@
  * Comments come from oxc's parse, so strings that merely look like comments never count. This is a
  * SMOKE DETECTOR, not a polygraph — a human who writes prose doc-blocks will trip it.
  *
- *   tsx analysis/provenance.ts <file|dir> [--json] [--git]
+ *   tsx provenance.ts <file|dir> [--json] [--git]
  */
 import { spawnSync } from "node:child_process";
 import * as fs from "@brianjenkins94/util/fs";

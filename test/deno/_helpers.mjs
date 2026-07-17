@@ -2,8 +2,8 @@
  *  with DENO_PERMISSION_BROKER_PATH pointed at it (so Deno routes every permission check to silo), then
  *  tear it all down. Returns { code, stdout, stderr } of the target. */
 const ROOT = new URL("../../", import.meta.url).pathname;
-const BROKER = ROOT + "enforcement/deno-broker.mjs";
-export const SILO_DENO = ROOT + "enforcement/silo-deno.mjs";
+const BROKER = ROOT + "enforce/deno-broker.mjs";
+export const SILO_DENO = ROOT + "enforce/silo-deno.mjs";
 export const FIXTURE = (n) => new URL("./fixtures/", import.meta.url).pathname + n;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

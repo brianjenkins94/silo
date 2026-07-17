@@ -1,4 +1,4 @@
-/** Spawn helpers for the Node integration suites: box a fixture (instrument.ts → node) or run it under
+/** Spawn helpers for the Node integration suites: box a fixture (box.ts → node) or run it under
  *  the --import preload, returning { status, stdout, stderr }. NODE_OPTIONS is cleared so the harness's
  *  own flags don't leak into the boxed/preloaded child. */
 import { spawnSync } from "node:child_process";
@@ -11,8 +11,8 @@ export const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(HERE, "../..");
 export const FIX = path.join(HERE, "fixtures");
 const TSX = path.join(ROOT, "node_modules/.bin/tsx");
-const INSTRUMENT = path.join(ROOT, "enforcement/instrument.ts");
-const PRELOAD = path.join(ROOT, "enforcement/preload.mjs");
+const INSTRUMENT = path.join(ROOT, "enforce/box.ts");
+const PRELOAD = path.join(ROOT, "enforce/preload.mjs");
 
 const env = (e) => ({ ...process.env, "NODE_OPTIONS": "", ...e });
 
