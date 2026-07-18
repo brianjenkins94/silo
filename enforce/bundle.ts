@@ -1,9 +1,9 @@
 /**
- * PROTOTYPE — "box" a script: bundle it with the broker injected and node:fs / node:child_process
+ * PROTOTYPE — bundle a script with the broker injected and node:fs / node:child_process
  * rewritten to brokered wrappers, so every capability call (net via the broker prelude, fs/exec via
  * the rewritten imports) is gated. Bundling is the only place to wrap builtin named imports uniformly.
  *
- *   tsx enforce/box.ts <script> <outfile>
+ *   tsx enforce/bundle.ts <script> <outfile>
  *
  * The brokered wrapper enumerates the real module's exports at build time, wraps the capability-
  * bearing ones with a gate, and passes the rest through (so arbitrary imports still resolve). The

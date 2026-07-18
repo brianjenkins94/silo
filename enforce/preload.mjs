@@ -1,5 +1,5 @@
 /**
- * PROTOTYPE — runtime preload (the in-process alternative to box.ts's bundle-and-run box):
+ * PROTOTYPE — runtime preload (the in-process alternative to bundle.ts's bundle-and-run box):
  *
  *   node --import ./enforce/preload.mjs <script>
  *   NODE_OPTIONS="--import /abs/enforce/preload.mjs" node <anything>   # ambient gating

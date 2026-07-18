@@ -109,10 +109,10 @@ bundles, so they run under plain node/deno without tsx — that's why they can't
 
 | file | role |
 |---|---|
-| `box.ts` | bundle a script with the broker injected + `node:fs`/`node:child_process` rewritten to brokered wrappers. |
+| `bundle.ts` | bundle a script with the broker injected + `node:fs`/`node:child_process` rewritten to brokered wrappers. |
 | `capability-broker.mjs` | the injected runtime broker — gates `net`/`fs`/`exec` → JUDICIAL decider → BERNARD redline; allowlist + grants. |
 | `decide.mjs` | the shared decision core (redline + JUDICIAL) — one brain for the in-process broker and the Deno backend. |
-| `preload.mjs` · `guard.ts` | in-process alternative to `box.ts` (a `node --import` preload) + its pluggable handler. |
+| `preload.mjs` · `guard.ts` | in-process alternative to `bundle.ts` (a `node --import` preload) + its pluggable handler. |
 | `deno-broker.mjs` · `silo-deno.mjs` · `codegen-gate.mjs` | the Deno backend — permission broker + eval/codegen shim. |
 
 **`policy/`** — the tunable rules: `capability-policy.ts` (which caps count as dangerous) · `import-policy.ts`
@@ -306,9 +306,9 @@ review gestures, hash-anchored: `--reviewed` (I read it) / `--waive` (accepted u
 - **Two static engines, on purpose.** `static-lsp` (tsgo LSP call hierarchy) is type-precise and yields
   the call *path*, but **under-reports** when types don't resolve (a dangerous bias) and is blind to property
   reads. `static-dce` (vite tree-shaking / DCE) **over-reports** (conservative-keep — the *safe* bias)
-  and needs no types. Running both and surfacing disagreements is itself the blind-spot detector. (tsgo over
-  ts-morph deliberately: its LSP ships a `callHierarchyProvider` today; ts-patch/ttsc is for build-time
-  transforms, not standalone analysis.)
+  and needs no types. Running both and surfacing disagreements is itself the blind-spot detector. (tsgo: its
+  LSP ships a `callHierarchyProvider` today; ts-patch/ttsc is for build-time transforms, not standalone
+  analysis.)
 - **Static + runtime, merged.** Static = "what it *can* do" (gate-time, complete-ish); the runtime broker =
   "what it *did*, and where" (precise scopes, partial coverage). Neither alone suffices — a script's dry-run
   path exercises *no* capabilities, which is why static reachability is required at all.

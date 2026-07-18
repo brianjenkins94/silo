@@ -1,4 +1,4 @@
-/** Spawn helpers for the Node integration suites: box a fixture (box.ts → node) or run it under
+/** Spawn helpers for the Node integration suites: box a fixture (bundle.ts → node) or run it under
  *  the --import preload, returning { status, stdout, stderr }. NODE_OPTIONS is cleared so the harness's
  *  own flags don't leak into the boxed/preloaded child. */
 import { spawnSync } from "node:child_process";
@@ -11,7 +11,7 @@ export const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(HERE, "../..");
 export const FIX = path.join(HERE, "fixtures");
 const TSX = path.join(ROOT, "node_modules/.bin/tsx");
-const INSTRUMENT = path.join(ROOT, "enforce/box.ts");
+const BUNDLE = path.join(ROOT, "enforce/bundle.ts");
 const PRELOAD = path.join(ROOT, "enforce/preload.mjs");
 
 const env = (e) => ({ ...process.env, "NODE_OPTIONS": "", ...e });
@@ -20,7 +20,7 @@ const env = (e) => ({ ...process.env, "NODE_OPTIONS": "", ...e });
 export function box(fixture, extraEnv = {}) {
 	const src = path.join(FIX, fixture);
 	const out = path.join(tmpdir(), `silo-test-${process.pid}-${Math.random().toString(36).slice(2)}.box.mjs`);
-	const b = spawnSync(TSX, [INSTRUMENT, src, out], { "encoding": "utf8", "env": env() });
+	const b = spawnSync(TSX, [BUNDLE, src, out], { "encoding": "utf8", "env": env() });
 
 	if (b.status !== 0) { return { "status": b.status ?? 1, "stdout": b.stdout ?? "", "stderr": `[box build failed] ${b.stderr ?? ""}` }; }
 	const r = spawnSync(process.execPath, [out], { "encoding": "utf8", "env": env(extraEnv) });

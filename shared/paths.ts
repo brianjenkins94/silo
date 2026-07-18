@@ -52,8 +52,8 @@ export function readPending(): Pending | null {
 export async function clearPending(): Promise<void> { await fs.rm(PENDING_REVIEW, { "force": true }); }
 
 // Published dist runs as .js under plain node; in dev we run the .ts sources via tsx. Spawned helpers
-// (the LSP engine, the box) follow suit: node + .js when built, tsx + .ts in dev.
+// (the LSP engine, the bundler) follow suit: node + .js when built, tsx + .ts in dev.
 export const BUILT = import.meta.url.endsWith(".js");
 export const RUNNER = BUILT ? [process.execPath] : [path.join(TOOL, "node_modules/.bin/tsx")];
 export const CAP_ENGINE = path.join(TOOL, "detect/static-lsp" + (BUILT ? ".js" : ".ts"));
-export const BOX_TS = path.join(TOOL, "enforce/box" + (BUILT ? ".js" : ".ts"));
+export const BUNDLE_TS = path.join(TOOL, "enforce/bundle" + (BUILT ? ".js" : ".ts"));

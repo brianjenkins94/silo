@@ -1,5 +1,5 @@
 /**
- * The `silo <script>` execution path: fingerprint a script, gate imports, box it with the broker, run
+ * The `silo <script>` execution path: fingerprint a script, gate imports, bundle it with the broker, run
  * it, capture the scopes the broker granted, and score confidence from run history. `status` lists what's
  * been managed; `installCmd` shells the cooldown installer.
  */
@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import * as fs from "@brianjenkins94/util/fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { BOX_TS, CAP_ENGINE, clearPending, ensureSiloDir, LEDGER, PROJECT, readPending, REGISTRY, RUNNER, TOOL } from "../shared/paths.js";
+import { BUNDLE_TS, CAP_ENGINE, clearPending, ensureSiloDir, LEDGER, PROJECT, readPending, REGISTRY, RUNNER, TOOL } from "../shared/paths.js";
 import { capabilityDrift, establishBaseline } from "./audit.js";
 import { checkImports, extractImports } from "../policy/import-policy.js";
 
@@ -59,11 +59,11 @@ function staticCaps(file: string): string[] {
 	try { return JSON.parse(line).caps ?? []; } catch { return []; }
 }
 
-/** Bundle the script with the broker + builtin rewriting (box.ts). */
-function box(file: string): string {
+/** Bundle the script with the broker + builtin rewriting (bundle.ts). */
+function bundle(file: string): string {
 	const out = path.join(tmpdir(), "silo-" + process.pid + "-" + path.basename(file).replace(/\.[^.]+$/u, "") + ".box.mjs");
 
-	spawnSync(RUNNER[0], [...RUNNER.slice(1), BOX_TS, file, out], { "stdio": ["ignore", "ignore", "inherit"], "env": { ...process.env, "NODE_OPTIONS": "" } });
+	spawnSync(RUNNER[0], [...RUNNER.slice(1), BUNDLE_TS, file, out], { "stdio": ["ignore", "ignore", "inherit"], "env": { ...process.env, "NODE_OPTIONS": "" } });
 
 	return out;
 }
@@ -176,7 +176,7 @@ export async function run(scriptArg: string, args: string[]): Promise<void> {
 	const mode = args.includes("--apply") ? "apply" : "dry-run";
 
 	console.log(`  → boxing + executing (${mode}) …\n`);
-	const { exit, grants } = await execBoxed(box(file), args, approved, { "script": rel, "confidence": confidence(rel, h).band });
+	const { exit, grants } = await execBoxed(bundle(file), args, approved, { "script": rel, "confidence": confidence(rel, h).band });
 
 	const newGrants = grants.filter((g) => !approved.includes(g));
 
