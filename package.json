@@ -6,20 +6,16 @@
   "bin": {
     "silo": "cli.js"
   },
-  "engines": {
-    "node": ">=22"
-  },
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
   "scripts": {
-    "preinstall": "node install/cooldown.mjs",
+    "preinstall": "#node install/cooldown.mjs",
+    "build:core": "[ -d node_modules/@oxc-parser/binding-wasm32-wasi ] || npm i --no-save --force @oxc-parser/binding-wasm32-wasi@0.137.0; vite build vscode -c vscode/core.config.ts",
+    "dev": "vite build vscode -c vscode/entry.config.ts && npm run build:core && vite vscode",
+    "build": "vite build vscode -c vscode/entry.config.ts && npm run build:core && vite build vscode",
     "silo": "tsx cli.ts",
-    "caps": "tsx detect/static-lsp.ts",
-    "caps:proto": "tsx detect/static-dce.ts",
-    "policy": "tsx policy/import-policy.ts",
-    "lint": "util-lint",
     "test": "node --test \"test/node/*.test.mjs\" && npm run test:deno",
     "test:node": "node --test \"test/node/*.test.mjs\"",
     "test:deno": "deno test -A test/deno/"
@@ -34,13 +30,19 @@
     "rolldown": "latest",
     "webcrack": "latest"
   },
-  "optionalDependencies": {
-    "@typescript/native-preview": "latest"
-  },
   "devDependencies": {
+    "@brianjenkins94/monaco-vscode-api": "https://brianjenkins94.github.io/lib/components/monaco-vscode-api@latest.tgz",
+    "@stitches/core": "latest",
     "@tsconfig/node-lts": "^24.0.0",
     "@types/node": "latest",
+    "billboard.js": "^4.0.3",
+    "lucide": "latest",
+    "preact": "latest",
     "tsx": "latest",
-    "vite": "latest"
+    "vite": "latest",
+    "vite-plugin-node-polyfills": "^0.28.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

@@ -17,6 +17,9 @@ import { rolldown } from "rolldown";
 import { detect, refine } from "./capability-detectors.js";
 import { deobfuscate, isLikelyBundled, resolveEntry } from "./deobfuscate.js";
 
+// builtinCaps (pure) lives in the shared analysis kernel; re-exported so consumers keep importing it here.
+export { builtinCaps } from "./analysis-core.js";
+
 export { detect } from "./capability-detectors.js";
 
 /** The specifier(s) to probe for a WHOLE-package fingerprint.
@@ -191,23 +194,6 @@ export async function wholePackageCaps(pkg: string, fromDir: string, stopRoot: s
 	caps.delete("?");
 
 	return refine(caps);   // empty = pure; callers render it that way
-}
-
-/** Builtins ARE capabilities — map (specifier, members) directly, no bundling. */
-export function builtinCaps(spec: string, members: string[], dynamic = false): string[] {
-	const base = spec.replace(/^node:/, "");
-	const caps = new Set<string>();
-
-	if (base === "fs" || base === "fs/promises") {
-		for (const m of members) {
-			if (/^(read|exists|stat|realpath|access|opendir|readdir|watch|lstat)/.test(m) || m === "createReadStream") { caps.add("fs:read"); } else if (/^(write|append|mkdir|unlink|rm|rename|cp|copy|chmod|chown|truncate|symlink|link|utimes|open|mkdtemp)/.test(m) || m === "createWriteStream") { caps.add("fs:write"); } else { caps.add("fs"); }
-		}
-
-		if (dynamic || !members.length) { caps.add("fs"); }
-		if (caps.has("fs:read") || caps.has("fs:write")) { caps.delete("fs"); }
-	} else if (base === "child_process") { caps.add("exec"); } else if (["net", "http", "https", "http2", "tls", "dgram", "dns"].includes(base)) { caps.add("net"); } else if (base === "vm") { caps.add("eval"); }
-
-	return [...caps].sort();
 }
 
 // CLI

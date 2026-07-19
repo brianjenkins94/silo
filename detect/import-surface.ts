@@ -15,18 +15,20 @@
  * shadowing of an import name (rare). v2: scope-resolved references (oxc semantic / tsgo LSP).
  */
 import * as fs from "@brianjenkins94/util/fs";
-import { builtinModules } from "node:module";
 import * as path from "node:path";
+// The PURE analysis kernel — shared with a browser capability view (see detect/analysis-core.ts). This
+// file is the NODE orchestration around it: fs file-walking + node_modules version resolution.
+import { type Surface, add, classifyKind, surfaceOfSource } from "./analysis-core.js";
 
-import { parseSync } from "oxc-parser";
+export type { SurfaceEntry } from "./analysis-core.js";   // re-export for consumers (audit.ts)
 
-const BUILTINS = new Set([...builtinModules, ...builtinModules.map((m) => "node:" + m)]);
-
-/** Classify a specifier and, for real deps, resolve the installed version from node_modules. */
+/** Classify a specifier and, for real deps, resolve the installed version from node_modules. Kind is the
+ *  pure part (analysis-core.classifyKind); version resolution is Node-only. */
 export function classify(spec: string, fromDir: string, stopRoot: string = fromDir): { "kind": "builtin" | "package" | "local"; "pkg"?: string; "version"?: string } {
-	if (spec.startsWith("node:") || BUILTINS.has(spec)) { return { "kind": "builtin" }; }
-	if (spec.startsWith(".") || spec.startsWith("/")) { return { "kind": "local" }; }
-	const pkg = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];
+	const kind = classifyKind(spec);
+
+	if (kind.kind !== "package") { return kind; }
+	const pkg = kind.pkg as string;
 
 	// Walk node_modules up from the workspace dir to the project root: a workspace-local version wins,
 	// else the hoisted root one — so non-hoisted monorepos resolve the version each package actually has.
@@ -40,87 +42,11 @@ export function classify(spec: string, fromDir: string, stopRoot: string = fromD
 	return { "kind": "package", "pkg": pkg };
 }
 
-interface Binding { "specifier": string; "kind": "named" | "default" | "namespace"; "imported"?: string }
-interface Use { "members": Set<string>; "dynamic": boolean }
-type Surface = Map<string, Use>;   // specifier -> consumed members
-export interface SurfaceEntry { "members": string[]; "dynamic": boolean }
-
 const isCode = (f: string) => /\.(m|c)?[jt]sx?$/.test(f);
 
-/** Recursively visit every AST node (object with a string `type`). */
-function walk(node: any, visit: (n: any) => void) {
-	if (!node || typeof node !== "object") { return; }
-	if (Array.isArray(node)) {
-		for (const c of node) { walk(c, visit); }
-
-		return;
-	}
-
-	if (typeof node.type === "string") { visit(node); }
-	for (const k in node) { if (k === "type") { continue; } walk(node[k], visit); }
-}
-
-function add(s: Surface, spec: string, member: string, dynamic = false) {
-	const u = s.get(spec) ?? { "members": new Set<string>(), "dynamic": false };
-
-	if (member) { u.members.add(member); }
-	if (dynamic) { u.dynamic = true; }
-	s.set(spec, u);
-}
-
+/** The consumer surface of a file — reads it, then delegates to the pure kernel. */
 export function analyze(file: string): Surface {
-	const src = fs.readFileSync(file);
-	const { program } = parseSync(file, src);
-	const surface: Surface = new Map();
-	const locals = new Map<string, Binding>();   // local name -> what it binds to
-
-	// 1. collect import bindings
-	for (const stmt of program.body as any[]) {
-		if (stmt.type !== "ImportDeclaration") { continue; }
-		const spec = stmt.source.value as string;
-
-		if (!stmt.specifiers?.length) { add(surface, spec, ""); continue; }   // side-effect import
-		for (const sp of stmt.specifiers) {
-			if (sp.type === "ImportSpecifier") {
-				const imported = sp.imported.name ?? sp.imported.value;
-
-				locals.set(sp.local.name, { "specifier": spec, "kind": "named", "imported": imported });
-				add(surface, spec, imported);                                    // named member is used by definition
-			} else if (sp.type === "ImportDefaultSpecifier") {
-				locals.set(sp.local.name, { "specifier": spec, "kind": "default" });
-				add(surface, spec, "default");
-			} else if (sp.type === "ImportNamespaceSpecifier") {
-				locals.set(sp.local.name, { "specifier": spec, "kind": "namespace" });
-				surface.set(spec, surface.get(spec) ?? { "members": new Set(), "dynamic": false });
-			}
-		}
-	}
-
-	// 2. for namespace bindings, find member access: local.foo  /  local[expr] (→ "*")
-	for (const [local, b] of locals) {
-		if (b.kind !== "namespace") { continue; }
-		walk(program, (n) => {
-			if (n.type === "MemberExpression" && n.object?.type === "Identifier" && n.object.name === local) {
-				if (n.computed) { add(surface, b.specifier, "", true); }             // local[x] → indeterminate
-				else if (n.property?.type === "Identifier") { add(surface, b.specifier, n.property.name); }
-			}
-		});
-	}
-
-	// 3. require("x") / import("x") — record specifier (members indeterminate)
-	walk(program, (n) => {
-		if (n.type === "CallExpression") {
-			const { callee } = n;
-			const isReq = callee?.type === "Identifier" && callee.name === "require";
-			const isDyn = callee?.type === "Import";
-
-			if ((isReq || isDyn) && n.arguments?.[0]?.type === "Literal" && typeof n.arguments[0].value === "string") {
-				add(surface, n.arguments[0].value, "", true);
-			}
-		}
-	});
-
-	return surface;
+	return surfaceOfSource(file, fs.readFileSync(file));
 }
 
 /** A directory that is its own package and is marked `private: true`. Such NESTED workspaces are

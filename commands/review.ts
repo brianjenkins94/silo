@@ -25,11 +25,15 @@
  *   tsx review.ts <file>                → mark every unit in <file> reviewed
  */
 import { execSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import * as fs from "@brianjenkins94/util/fs";
 import * as path from "node:path";
-import { parseSync } from "oxc-parser";
+// The PURE review kernel — shared with the browser extension (see commands/review-core.ts). review.ts is
+// the NODE orchestration around it: git scoping, fs reads, eslint, provenance, the store on disk.
+import { type ReviewStore, type Understood, type Unit, understoodOf, unitsOfSource } from "./review-core.js";
+import { isGated, reviewRecord, serializeStore } from "./review-store.js";
 import { analyzeFile } from "../shared/provenance.js";
+
+export type { Understood, Unit };   // re-export for consumers that imported these from review.js
 
 // ROOT anchors the review store and every git-scoped query. Outside a git repo (a scratch dir, a test
 // fixture) there's no history to diff against, so fall back to cwd rather than crashing the whole CLI at
@@ -40,22 +44,7 @@ const ROOT = (() => {
 const STORE = path.join(ROOT, ".silo", "review.json");
 const TOP = 20;   // queue rows to show (there are far more units than files)
 
-interface ReviewRecord { "hash": string; "note"?: string; "at": string; "waived"?: boolean }
-type ReviewStore = Record<string, ReviewRecord>;
-
-/** `waived` = consciously accepted WITHOUT reading it. It satisfies the gate but is NOT trust — the ledger
- *  says so, the queue shows it, and it's hash-anchored like a review, so editing the unit raises it again.
- *  This replaces a global "accepted debt" counter: a per-unit ledger entry can't silently merge wrong. */
-export type Understood = "reviewed" | "waived" | "stale" | "unreviewed";
 type Origin = "clean" | "possible" | "likely";
-
-export interface Unit {
-	"id": string;            // `<file>#<fn>` — `#<module>` = the file's top-level glue
-	"file": string;
-	"hash": string;
-	"startLine": number;
-	"endLine": number;
-}
 
 export interface Scored extends Unit {
 	"understood": Understood;
@@ -72,7 +61,7 @@ function loadStore(): ReviewStore {
 
 async function saveStore(store: ReviewStore): Promise<void> {
 	await fs.mkdir(path.dirname(STORE), { "recursive": true });
-	fs.writeFileSync(STORE, JSON.stringify(store, undefined, 2) + "\n");
+	fs.writeFileSync(STORE, serializeStore(store));
 }
 
 function sourceFiles(): string[] {
@@ -88,88 +77,10 @@ function sourceFiles(): string[] {
 		.filter((f) => !f.startsWith("test/") && !f.includes("node_modules"));
 }
 
-const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
-
-/** Offsets of each line start, so an offset → 1-based line is a cheap lookup. */
-function lineIndex(src: string): number[] {
-	const starts = [0];
-
-	for (let i = 0; i < src.length; i += 1) { if (src[i] === "\n") { starts.push(i + 1); } }
-
-	return starts;
-}
-
-function lineAt(starts: number[], offset: number): number {
-	let lo = 0;
-	let hi = starts.length - 1;
-
-	while (lo < hi) {
-		const mid = Math.ceil((lo + hi) / 2);
-
-		if (starts[mid] <= offset) { lo = mid; } else { hi = mid - 1; }
-	}
-
-	return lo + 1;
-}
-
-/** Top-level functions / arrow-consts / class methods, with their source spans. Mirrors the declaration
- *  shapes provenance.ts already recognises. */
-function spans(file: string, src: string): { "name": string; "start": number; "end": number }[] {
-	const { program } = parseSync(file, src) as any;
-	const out: { "name": string; "start": number; "end": number }[] = [];
-
-	for (const stmt of (program.body ?? []) as any[]) {
-		const decl = stmt.type?.startsWith("Export") ? (stmt.declaration ?? stmt) : stmt;
-
-		if (decl?.type === "FunctionDeclaration" || decl?.type === "TSDeclareFunction") {
-			out.push({ "name": decl.id?.name ?? "(anonymous)", "start": stmt.start, "end": stmt.end });
-		} else if (decl?.type === "VariableDeclaration") {
-			for (const v of decl.declarations ?? []) {
-				if (v.init && (v.init.type === "ArrowFunctionExpression" || v.init.type === "FunctionExpression")) {
-					out.push({ "name": v.id?.name ?? "(anonymous)", "start": stmt.start, "end": stmt.end });
-				}
-			}
-		} else if (decl?.type === "ClassDeclaration") {
-			const cls = decl.id?.name ?? "(class)";
-
-			for (const m of decl.body?.body ?? []) {
-				if (m.type === "MethodDefinition") { out.push({ "name": `${cls}.${m.key?.name ?? "?"}`, "start": m.start, "end": m.end }); }
-			}
-		}
-	}
-
-	return out.sort((a, b) => a.start - b.start);
-}
-
 /** Every byte of a file lands in exactly one unit: each function span, plus `#<module>` = what's left
  *  over (imports, constants, top-level side effects) once the function spans are cut out. */
 function unitsOf(file: string): Unit[] {
 	return unitsOfSource(file, fs.readFileSync(path.join(ROOT, file)));
-}
-
-/** Split+hash units from SOURCE TEXT, so the same logic works on a git revision (`git show base:file`). */
-function unitsOfSource(file: string, src: string): Unit[] {
-	const starts = lineIndex(src);
-	const fns = spans(file, src);
-
-	const units: Unit[] = fns.map((f) => ({
-		"id": `${file}#${f.name}`,
-		"file": file,
-		"hash": sha(src.slice(f.start, f.end)),
-		"startLine": lineAt(starts, f.start),
-		"endLine": lineAt(starts, f.end)
-	}));
-
-	// the module glue = source with every function span removed
-	let glue = "";
-	let cursor = 0;
-
-	for (const f of fns) { glue += src.slice(cursor, f.start); cursor = f.end; }
-	glue += src.slice(cursor);
-
-	units.push({ "id": `${file}#<module>`, "file": file, "hash": sha(glue), "startLine": 0, "endLine": 0 });
-
-	return units;
 }
 
 /**
@@ -237,12 +148,15 @@ function lintMessages(): Record<string, { "line": number; "severity": number }[]
 	// still emits their cached results to the formatter. No point building a second cache on top.
 	const cmd = `npx eslint . -f json --cache --cache-location ${JSON.stringify(path.join(ROOT, ".silo", "eslintcache"))}`;
 
+	// Lint data is a nice-to-have (per-unit error/warning counts) — NEVER let it break the review. A giant/
+	// truncated eslint report (e.g. it wandered into a build dir) yields unparseable JSON; degrade to no lint
+	// data rather than throwing all the way out of `reviewUnits`.
 	try {
-		ingest(execSync(cmd, { "cwd": ROOT, "encoding": "utf8", "stdio": ["ignore", "pipe", "ignore"], "maxBuffer": 64 * 1024 * 1024 }));
+		ingest(execSync(cmd, { "cwd": ROOT, "encoding": "utf8", "stdio": ["ignore", "pipe", "ignore"], "maxBuffer": 128 * 1024 * 1024 }));
 	} catch (error) {
 		const stdout = (error as { "stdout"?: string }).stdout;   // eslint exits non-zero WITH json on stdout
 
-		if (stdout) { ingest(stdout); }
+		try { if (stdout) { ingest(stdout); } } catch { /* unparseable (truncated) report — skip lint data */ }
 	}
 
 	return out;
@@ -270,11 +184,6 @@ export function fileStates(rows: readonly { "file": string; "understood": Unders
 /** A unit's review state ONLY (no lint / origin). */
 export interface UnitState { "id": string; "file": string; "hash": string; "understood": Understood }
 
-/** unreviewed (never signed) ≻ stale (signed, then edited) ≻ waived (accepted unread) ≻ reviewed (read). */
-function understoodOf(rec: ReviewRecord | undefined, hash: string): Understood {
-	return rec === undefined ? "unreviewed" : rec.hash !== hash ? "stale" : rec.waived === true ? "waived" : "reviewed";
-}
-
 /** Units + understood state, WITHOUT score()'s eslint pass (that pass is only for the lint columns). The
  *  cheap inputs the runner's escalation feeds to gateUnits — reviewUnits() would spawn `npx eslint .`. */
 export function reviewStates(): UnitState[] {
@@ -295,7 +204,7 @@ export function reviewStates(): UnitState[] {
 /** Touched, capability-bearing (exposed), and neither reviewed nor waived. Generic so callers keep their row
  *  type — full Scored from the audit flow, light UnitState from the runner. */
 export function gateUnits<T extends { "id": string; "file": string; "understood": Understood }>(review: readonly T[], exposed: Set<string>, touched: Set<string>): T[] {
-	return review.filter((u) => touched.has(u.id) && exposed.has(u.file) && u.understood !== "reviewed" && u.understood !== "waived");
+	return review.filter((u) => isGated(exposed.has(u.file), touched.has(u.id), u.understood));
 }
 
 /** Record the human sign-off for a unit (`file#fn`) or every unit in a file. Returns what it marked. */
@@ -305,7 +214,7 @@ export async function markReviewed(target: string, waived = false): Promise<Unit
 	const file = path.relative(ROOT, path.resolve(rawFile));
 	const marked = unitsOf(file).filter((u) => fn === undefined || u.id === `${file}#${fn}`);
 
-	for (const u of marked) { store[u.id] = { "hash": u.hash, "at": new Date().toISOString(), ...(waived ? { "waived": true } : {}) }; }
+	for (const u of marked) { store[u.id] = reviewRecord(u.hash, waived); }
 	if (marked.length) { await saveStore(store); }
 
 	return marked;

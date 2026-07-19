@@ -1,0 +1,28 @@
+{
+  "name": "silo",
+  "displayName": "silo",
+  "description": "Earned, bounded trust for scripts — the review overlay (hello world for now).",
+  "publisher": "brianjenkins94",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "*"
+  },
+  "browser": "extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "silo.review.mark",
+        "title": "Mark Reviewed",
+        "category": "Silo"
+      },
+      {
+        "command": "silo.review.waive",
+        "title": "Waive",
+        "category": "Silo"
+      }
+    ]
+  }
+}

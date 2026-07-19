@@ -6,6 +6,7 @@
  *
  *   silo                      the two-sided baseline (own code + node_modules) + the trust ratchet
  *   silo audit                consumer side only
+ *   silo review [--json]      the quality axis alone — human queue, or scored units as JSON (client seam)
  *   silo <script> [args…]     fingerprint → gate → box → execute under the broker (runner.ts)
  *   silo status               list managed scripts
  *   silo install [args…]      cooldown-aware install
@@ -124,6 +125,46 @@ async function baseline(args: string[], consumerOnly = false) {
 // go through cmd-ts and the rest is routed by hand. There is no `--ci` flag: the gate arms off `$CI`.
 const app = group("silo", {
 	"status": command({ "name": "status", "args": {}, "handler": async () => { status(); } }),
+	// The QUALITY axis as a standalone read. Human queue by default; `--json` emits the scored units
+	// (id · file · line range · understood · origin · priority) — the seam a review-overlay client (the
+	// browser workbench / a VS Code extension) reads instead of scraping the printed table. `--json` also
+	// folds in the CAPABILITY axis per unit so a client can render "red = gated", not just unreviewed:
+	//   exposed — the unit's file imports a dep reaching a dangerous capability (capability-bearing).
+	//   gated   — what the ratchet actually flags: touched vs base, exposed, and not reviewed/waived.
+	// The capability join is best-effort (needs deps installed); on failure both fields fall back to false.
+	"review": command({
+		"name": "review",
+		"args": { "json": flag({ "long": "json" }) },
+		"handler": async ({ json }) => {
+			const units = reviewUnits();
+
+			if (!json) { printReview(units); return; }
+
+			const base = baseRef();
+			const exposed = new Set<string>();
+			let touched = new Set<string>();
+			let gated = new Set<string>();
+			const log = console.log;
+
+			try {
+				console.log = () => { /* auditConsumer narrates to stdout — mute so --json stays pure JSON */ };
+				await auditConsumer(loadBaseline(), PROJECT, fileStates(units), exposed);
+				touched = touchedUnits(base);
+				gated = new Set(gateUnits(units, exposed, touched).map((u) => u.id));
+			} catch {
+				exposed.clear();   // audit unavailable (no deps / non-git) → drop partial data, fields false
+				touched = new Set();
+			} finally {
+				console.log = log;
+			}
+
+			// `touched` is emitted alongside `gated` so a live client can RECOMPUTE gating as its own
+			// understood state changes (edit a reviewed unit → stale → re-gated) without re-running silo.
+			const enriched = units.map((u) => ({ ...u, "exposed": exposed.has(u.file), "touched": touched.has(u.id), "gated": gated.has(u.id) }));
+
+			console.log(JSON.stringify({ "base": base, "units": enriched }, undefined, 2));
+		}
+	}),
 	"audit": command({
 		"name": "audit",
 		"args": {
@@ -139,4 +180,4 @@ const cmd = argv[0];
 
 if (!cmd || cmd.startsWith("-")) { await baseline(argv); }                  // bare `silo` / `silo --approve` (CI gate when $CI is set)
 else if (cmd === "install" || cmd === "i") { installCmd(argv.slice(1)); }   // passthrough → cooldown install
-else if (cmd === "status" || cmd === "audit") { await runCli(app, { "argv": argv, "exit": false }); } else { await run(cmd, argv.slice(1)); }   // `silo <script> [args…]` → the runner
+else if (cmd === "status" || cmd === "audit" || cmd === "review") { await runCli(app, { "argv": argv, "exit": false }); } else { await run(cmd, argv.slice(1)); }   // `silo <script> [args…]` → the runner

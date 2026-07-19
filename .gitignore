@@ -148,3 +148,7 @@ vite.config.ts.timestamp-*
 
 # npm lockfile
 package-lock.json
+
+# docs/
+docs/*
+!docs/index.html
