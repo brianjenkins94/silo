@@ -1,14 +1,10 @@
 /**
- * The silo review kernel as a same-origin ESM module, built with oxc's `browser` build (wasm) by
- * core.config.ts → dist/core.js (+ its wasm/WASI-worker assets), served at /__vscode__/core.js.
- *
- * The CJS extension can't be ESM (the host guards `_loadESMModule`), but it CAN `await import()` this
- * at runtime — that path bypasses the guard (verified). So the extension dynamically imports this to run
- * silo's REAL `unitsOfSource`/`understoodOf` in-browser, closing the stopgap's monaco-symbol drift.
+ * The silo review kernel as a same-origin ESM module (core.js) — built by core.config.ts with oxc's browser
+ * build (the current threaded @oxc-parser/binding-wasm32-wasi) + its wasm/WASI-worker assets, served at
+ * /__vscode__/core.js. The WEB/harness path: the harness is crossOriginIsolated, so the threaded wasm + worker
+ * run. The CJS extension can't be ESM but CAN `await import()` this at runtime (bypassing the host's ESM guard),
+ * giving the overlay silo's REAL unitsOfSource/understoodOf/attributedTransforms — byte-identical to the CLI.
+ * (This is exactly the provider.ts `Kernel` shape.)
  */
 export { understoodOf, unitsOfSource } from "../../../commands/review-core";
-export type { ReviewStore, Understood, Unit } from "../../../commands/review-core";
-
-// The deps-in-browser CAPABILITY path (esm.sh → webcrack → detect) — live `exposed` without the CLI.
-export { capsOfPackage, exposedOfSource } from "../../../detect/caps-browser";
-export type { FileCaps } from "../../../detect/caps-browser";
+export { attributedTransforms } from "../../../commands/session-core";

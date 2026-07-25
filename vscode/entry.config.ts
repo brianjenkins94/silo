@@ -6,10 +6,10 @@ import { defineConfig, type Plugin } from "vite";
  * Bundles the silo extension (extension.ts → CJS) into a string exposed as `silo:extension`;
  * workbench-entry registers it via a data: URL. `vscode` stays external (the host injects it).
  *
- * The extension is CJS, but at RUNTIME it `await import()`s silo's oxc-wasm review kernel — a SEPARATE
- * vite build (core.config.ts → dist/core.js, run by the `build:core` script and served by vscodePlugin
- * at /__vscode__/core.js). That dynamic import bypasses the host's ESM-entry guard, so the extension
- * runs silo's real core without needing ESM extension support.
+ * This is the HARNESS/web build (browser web-worker host). The extension is CJS but at RUNTIME it `await import()`s
+ * the served oxc-wasm core (core.config.ts → dist/core.js, run by build:core, served at /__vscode__/core.js) —
+ * bypassing the host's ESM-entry guard. The shipped desktop extension is a separate Node-host build with native
+ * oxc-parser (extension-node.ts → package-vsix.ts).
  */
 function siloExtension(): Plugin {
 	const id = "silo:extension";

@@ -54,6 +54,90 @@ npx tsx cli.ts audit [dir]        # own code only; exit 1 on un-approved drift
 npx tsx cli.ts audit . --approve  # accept the current surface as the baseline
 npx tsx cli.ts --reviewed <file>#<fn>   # sign off a unit (I read it) · --waive <unit> (accepted unread)
 CI=true npx tsx cli.ts audit      # non-interactive gate (fails on drift; the GitHub Action's engine)
+
+# the quality axis, standalone
+npx tsx cli.ts review             # the review queue — capability-bearing, unread, biggest first
+npx tsx cli.ts review --json      # scored units as JSON (the review-overlay client seam)
+npx tsx cli.ts accept <ref>       # onboard: take the code at <ref> as your reviewed baseline, review forward
+```
+
+## How you actually use it
+
+silo has **two axes** and **one loop**. The axes are **capability** (what your code and dependencies *can do*, versus an approved baseline) and **quality** (how much of that capability-bearing code you've actually *read*). Everyday use is a single loop that keeps both honest as you — and your AI — write code.
+
+### The two axes
+
+```mermaid
+flowchart TB
+    subgraph cap["Capability axis — what your code CAN do"]
+        direction TB
+        a["your code + dependencies"] --> b["capability surface:<br/>fs · net · exec · env · eval"]
+        b --> c{"expanded vs the<br/>committed baseline?"}
+    end
+    subgraph qual["Quality axis — what you have READ"]
+        direction TB
+        d["every function is a unit"] --> e["reviewed · waived ·<br/>stale · unreviewed"]
+    end
+    c -->|"a NEW capability"| block["BLOCKS the run<br/>— approve it or fix it"]
+    c -->|"unchanged"| gate{"unread + capability-bearing<br/>+ touched by this change?"}
+    e --> gate
+    gate -->|"yes"| nudge["trust-ratchet NUDGE<br/>(non-blocking reminder)"]
+    gate -->|"no"| clear["nothing to do"]
+```
+
+The only thing that ever **blocks** is a capability *expansion* — a genuinely new power (say your change starts touching `child_process`) versus your approved baseline. The quality axis never blocks a run; it **nudges**. That nudge is the **trust ratchet**: capability-bearing code your change *touched* but you haven't read. It's scoped to what you changed — "you made it worse," not "you have a giant backlog."
+
+### The everyday loop
+
+```mermaid
+flowchart TD
+    onboard["ONBOARD once<br/>silo accept &lt;ref&gt;  (trust your history)<br/>silo  (write the capability baseline)"] --> work
+    work["write / generate code"] --> gate["run it:<br/>silo &lt;script&gt;  ·  silo  ·  CI=true silo"]
+    gate --> q1{"new capability<br/>vs baseline?"}
+    q1 -->|"yes — blocks"| approve["review it, then<br/>silo --approve"]
+    approve --> work
+    q1 -->|"no"| q2{"touched unread<br/>capability-bearing code?"}
+    q2 -->|"yes — nudge"| review["silo --reviewed &lt;unit&gt;<br/>or silo --waive &lt;unit&gt;"]
+    review --> work
+    q2 -->|"no"| run["boxed run executes;<br/>confidence rises on clean runs"]
+    run --> work
+```
+
+The point: you don't run a special "review" ceremony. You keep working; silo rides the commands you already run (`silo <script>`, or the bare `silo` gate) and only interrupts you for a real capability expansion — otherwise it just points at the few risky things you touched.
+
+### Which command, when
+
+| situation | command |
+|---|---|
+| **adopting silo on an existing repo** | `silo accept <ref>` — take everything at `<ref>` as already-reviewed, then review *forward* |
+| establish the capability baseline | `silo` (bare) — writes `.silo/baseline.json`; commit it |
+| **you wrote or generated code** | `silo <script>` — reviews the surface if deps moved, boxes it, runs it under the broker |
+| what's left to review? | `silo review` — the queue (biggest / riskiest first); `--json` for tools |
+| **you read a unit** | `silo --reviewed <file>#<fn>` |
+| taking the debt knowingly | `silo --waive <file>#<fn>` |
+| a capability expanded on purpose | `silo --approve` |
+| installing dependencies | `npm install` — the release-age cooldown runs automatically |
+| in CI | `CI=true silo` — gates on drift, never writes |
+
+There are **two baselines**, one per axis: `.silo/baseline.json` (capability — what powers are approved, written by `silo` / `--approve`) and `.silo/review.json` (quality — which units you've read, written by `--reviewed` / `--waive` / `accept`). Both are committed; they *are* your project's trust state.
+
+### A unit's review lifecycle
+
+Review is **hash-anchored per function**: a sign-off sticks only while that unit's code is unchanged, so an edit re-opens review automatically — there's no "unproven" label to remember to peel off.
+
+```mermaid
+stateDiagram-v2
+    [*] --> unreviewed
+    unreviewed --> reviewed: silo --reviewed (I read it)
+    unreviewed --> waived: silo --waive (accepted unread)
+    reviewed --> stale: the unit's code changes
+    waived --> stale: the unit's code changes
+    stale --> reviewed: read the new version
+    note right of stale
+        "changes" is STRUCTURAL — a reformat
+        (spaces to tabs, spacing) does NOT stale
+        a unit; the hash is over the parse tree.
+    end note
 ```
 
 ## Two layers of capability analysis

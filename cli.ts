@@ -11,13 +11,14 @@
  *   silo status               list managed scripts
  *   silo install [args…]      cooldown-aware install
  *   silo --reviewed <unit>    sign off a unit (I read it) · --waive <unit> (accepted unread)
+ *   silo accept <ref>         onboard: take the code at <ref> as your reviewed baseline, review forward
  */
 import * as fs from "@brianjenkins94/util/fs";
 import { command, flag, group, optional, positional, run as runCli, string } from "@brianjenkins94/util/cmd";
 import { auditConsumer, auditPackages, type Baseline, loadBaseline, saveBaseline } from "./commands/audit.js";
 import { flushFingerprints } from "./shared/cache.js";
 import { BASELINE, clearPending, PROJECT, readPending } from "./shared/paths.js";
-import { baseRef, fileStates, gateUnits, markReviewed, printReview, reviewUnits, touchedUnits } from "./commands/review.js";
+import { acceptRef, baseRef, fileStates, gateUnits, markReviewed, printReview, reviewUnits, touchedUnits } from "./commands/review.js";
 import { installCmd, run, status } from "./commands/runner.js";
 
 /** Fail the gate. In GitHub Actions also emit a workflow error annotation (shows inline on the PR). */
@@ -172,6 +173,23 @@ const app = group("silo", {
 			"approve": flag({ "long": "approve" })
 		},
 		"handler": async ({ dir, approve }) => baseline([...(dir ? [dir] : []), ...(approve ? ["--approve"] : [])], true)
+	}),
+	// Onboarding ramp: mark every unit at <ref> reviewed (its hash-anchored shape then), so you review only
+	// what's drifted or new since — instead of signing off an existing repo unit-by-unit. The structural hash
+	// (review-core) is what makes this safe: a reformat since <ref> doesn't read as drift.
+	"accept": command({
+		"name": "accept",
+		"args": { "ref": positional({ "type": string, "displayName": "ref" }) },
+		"handler": async ({ ref }) => {
+			try {
+				const { units, files } = await acceptRef(ref);
+
+				console.log(`  ✓ accepted ${units} unit(s) across ${files} file(s) as reviewed @ ${ref}`);
+				console.log("    run `silo review` to see what's changed since.");
+			} catch (error) {
+				gateFail((error as Error).message);
+			}
+		}
 	})
 });
 
@@ -180,4 +198,4 @@ const cmd = argv[0];
 
 if (!cmd || cmd.startsWith("-")) { await baseline(argv); }                  // bare `silo` / `silo --approve` (CI gate when $CI is set)
 else if (cmd === "install" || cmd === "i") { installCmd(argv.slice(1)); }   // passthrough → cooldown install
-else if (cmd === "status" || cmd === "audit" || cmd === "review") { await runCli(app, { "argv": argv, "exit": false }); } else { await run(cmd, argv.slice(1)); }   // `silo <script> [args…]` → the runner
+else if (cmd === "status" || cmd === "audit" || cmd === "review" || cmd === "accept") { await runCli(app, { "argv": argv, "exit": false }); } else { await run(cmd, argv.slice(1)); }   // `silo <script> [args…]` → the runner

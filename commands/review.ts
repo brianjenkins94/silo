@@ -24,7 +24,7 @@
  *   tsx review.ts <file>#<fn>           → mark ONE unit reviewed at its current hash
  *   tsx review.ts <file>                → mark every unit in <file> reviewed
  */
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import * as fs from "@brianjenkins94/util/fs";
 import * as path from "node:path";
 // The PURE review kernel — shared with the browser extension (see commands/review-core.ts). review.ts is
@@ -218,6 +218,37 @@ export async function markReviewed(target: string, waived = false): Promise<Unit
 	if (marked.length) { await saveStore(store); }
 
 	return marked;
+}
+
+/**
+ * `silo accept <ref>` — declare the code AS IT WAS at <ref> your human-approved baseline: mark every unit at
+ * that revision reviewed, hash-anchored to its shape THEN. On the working tree this makes units unchanged
+ * since <ref> read `reviewed`, drifted ones `stale`, and units new since `unreviewed` — so you review FORWARD
+ * from a trusted point instead of signing off a whole repo by hand. Merges into the existing store (units not
+ * present at <ref> keep whatever verdict they have). Only meaningful because the hash is structural — a
+ * reformat between <ref> and now doesn't count as drift (see review-core `canonical`).
+ */
+export async function acceptRef(ref: string): Promise<{ "units": number; "files": number }> {
+	const git = (...args: string[]) => execFileSync("git", args, { "cwd": ROOT, "encoding": "utf8", "maxBuffer": 1 << 28 });
+
+	let commit: string;
+
+	try { commit = git("rev-parse", "--verify", `${ref}^{commit}`).trim(); } catch { throw new Error(`not a commit: ${ref}`); }
+
+	const files = git("ls-tree", "-r", "--name-only", commit).split("\n").filter(Boolean).filter((f) => /\.(?:m|c)?[jt]sx?$/u.test(f) && !f.startsWith("test/") && !f.includes("node_modules"));
+	const store = loadStore();
+	let units = 0;
+
+	for (const f of files) {
+		let src: string;
+
+		try { src = git("show", `${commit}:${f}`); } catch { continue; }   // absent/binary at that rev
+		try { for (const u of unitsOfSource(f, src)) { store[u.id] = reviewRecord(u.hash); units += 1; } } catch { /* unparseable at that rev */ }
+	}
+
+	await saveStore(store);
+
+	return { "units": units, "files": files.length };
 }
 
 function score(store: ReviewStore): Scored[] {

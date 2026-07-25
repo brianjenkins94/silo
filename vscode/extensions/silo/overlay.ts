@@ -13,6 +13,9 @@ import { type BurndownModel, type JumpItem, type Tone, TONE_COLOR } from "./burn
 import type { ReviewStore, Understood } from "../../../commands/review-core";
 // Shared, oxc-free review rules — so the overlay's store format + gate rule stay identical to the CLI's.
 import { isGated, reviewRecord, serializeStore } from "../../../commands/review-store";
+// Pure (no oxc) — safe to bundle into the extension; redacts secrets before a session transform is persisted.
+import { redactSecrets } from "../../../commands/redact";
+import type { AttributedTransform } from "../../../commands/session-core";   // type only — erased, no oxc in the bundle
 
 export type { Understood };
 
@@ -38,12 +41,14 @@ export interface ResolvedUnit { "range": vscode.Range; "understood": Understood;
 
 /** The swappable "compute the live review axis" seam. */
 export interface UnitProvider {
-	/** Async setup (e.g. instantiate oxc-wasm). No-op for the stopgap. */
+	/** Async setup: the web provider import()s the served oxc-wasm core; the native provider warms the parser. */
 	"init": () => Promise<void>;
 	/** For each baked unit in a document, resolve its live range, `understood`, and record hash. */
 	"resolve": (document: vscode.TextDocument, units: readonly BakedUnit[], store: ReviewStore) => Promise<Map<string, ResolvedUnit>>;
 	/** Told when a unit was just marked, so a session-baseline provider (the stopgap) can re-anchor. */
 	"onMarked"?: (id: string, understood: Understood, document: vscode.TextDocument) => void;
+	/** Baseline→final transforms with call-graph attribution to the focal unit (oxc core) — for the recorder. */
+	"attributedTransforms"?: (focalId: string, baseline: Record<string, string>, final: Record<string, string>) => Promise<AttributedTransform[]>;
 }
 
 const LABEL: Record<Understood, { "glyph": string; "word": string }> = {
@@ -57,6 +62,7 @@ const TONES: Tone[] = ["gated", "reviewed", "attention", "untracked"];
 
 const STORE_PATH = [".silo", "review.json"];
 const UNITS_PATH = [".silo", "review-units.json"];
+const SESSIONS_PATH = [".silo", "sessions.jsonl"];
 
 async function readJson<T>(uri: vscode.Uri | undefined, fallback: T): Promise<T> {
 	if (uri === undefined) { return fallback; }
@@ -170,6 +176,73 @@ export async function activateOverlay(context: vscode.ExtensionContext, provider
 		})
 	}));
 
+	// A session = the focal unit + a baseline snapshot of every open code file when it was focused (jumped to
+	// from the burndown), so the ripple — units changed while improving the focal unit, INCLUDING in other open
+	// files — is captured, then attributed to the focal unit by call-graph distance.
+	const isCode = (file: string) => /\.(m|c)?[jt]sx?$/u.test(file);
+	let session: { "focalId": string; "baseline": Map<string, string> } | undefined;
+	const unitSourceAt = (document: vscode.TextDocument, startLine: number, endLine: number) =>
+		document.getText().split("\n").slice(Math.max(0, startLine - 1), endLine).join("\n");
+
+	const snapshotOpenDocs = (baseline: Map<string, string>): void => {
+		for (const doc of vscode.workspace.textDocuments) {
+			const rel = relativeOf(doc.uri);
+
+			if (doc.uri.scheme === "file" && isCode(rel) && !baseline.has(rel)) { baseline.set(rel, doc.getText()); }
+		}
+	};
+
+	// Files opened DURING a session get snapshotted too (you open a file to edit it) — so cross-file ripple has a
+	// focus-time baseline to diff against.
+	context.subscriptions.push(vscode.workspace.onDidOpenTextDocument((doc) => {
+		const rel = relativeOf(doc.uri);
+
+		if (session !== undefined && doc.uri.scheme === "file" && isCode(rel) && !session.baseline.has(rel)) { session.baseline.set(rel, doc.getText()); }
+	}));
+
+	type Rec = { "id": string; "action": string; "attribution": string; "before"?: string; "after"?: string };
+
+	// The burndown-to-record slice: on APPROVAL of the focal unit, record what getting it approved took — the
+	// focal transform + its call-graph-connected ripple (across files) — to the session log (the corpus feed).
+	// `incidental` co-changes are dropped (they belong to their own unit's session). All sources redacted.
+	const recordSession = async (id: string, document: vscode.TextDocument): Promise<void> => {
+		if (session === undefined || session.focalId !== id || folderUri === undefined) { return; }
+		const { baseline } = session;
+
+		session = undefined;
+		const final: Record<string, string> = {};
+
+		for (const rel of baseline.keys()) {
+			const open = vscode.workspace.textDocuments.find((doc) => relativeOf(doc.uri) === rel);
+
+			if (open !== undefined) { final[rel] = open.getText(); } else {
+				try { final[rel] = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folderUri, ...rel.split("/")))); } catch { final[rel] = baseline.get(rel) ?? ""; }
+			}
+		}
+
+		const attributed = (await provider.attributedTransforms?.(id, Object.fromEntries(baseline), final)) ?? [];
+		const transforms: Rec[] = attributed
+			.filter((t) => t.attribution !== "incidental")
+			.map((t) => ({ "id": t.id, "action": t.action, "attribution": t.attribution, "before": t.before === undefined ? undefined : redactSecrets(t.before), "after": t.after === undefined ? undefined : redactSecrets(t.after) }));
+
+		// Focal approved as-is (no edit) → not in the diff; record it anyway.
+		if (!transforms.some((t) => t.id === id)) {
+			const unit = baked.find((u) => u.id === id);
+			const live = resolved.get(id)?.range;
+			const source = redactSecrets(unitSourceAt(document, live !== undefined ? live.start.line + 1 : unit?.startLine ?? 1, live !== undefined ? live.end.line + 1 : unit?.endLine ?? 1));
+
+			transforms.unshift({ "id": id, "action": "unchanged", "attribution": "direct", "before": source, "after": source });
+		}
+
+		const record = { "focal": id, "at": new Date().toISOString(), "transforms": transforms };
+		const uri = vscode.Uri.joinPath(folderUri, ...SESSIONS_PATH);
+		let existing = "";
+
+		try { existing = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)); } catch { /* first record — new file */ }
+		await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(existing + JSON.stringify(record) + "\n"));
+		console.log(`[silo] session recorded ${id} — ${transforms.length} transform(s): ${transforms.map((t) => t.attribution + ":" + t.action).join(", ")}`);
+	};
+
 	// Marking: persist to the review store in silo's exact format, then let the provider re-anchor and
 	// re-render. The recorded hash comes from the provider (silo's live hash for core; the baked hash for
 	// the stopgap, which can't reproduce silo's byte-spans).
@@ -189,6 +262,7 @@ export async function activateOverlay(context: vscode.ExtensionContext, provider
 		if (editor !== undefined) {
 			provider.onMarked?.(id, understood, editor.document);
 			await refresh(editor.document);
+			if (understood === "reviewed") { await recordSession(id, editor.document); }
 		}
 
 		changed.fire();
@@ -245,6 +319,8 @@ export async function activateOverlay(context: vscode.ExtensionContext, provider
 
 			editor.revealRange(target, vscode.TextEditorRevealType.InCenter);
 			editor.selection = new vscode.Selection(target.start, target.start);
+			session = { "focalId": id, "baseline": new Map() };   // start a session; baseline = every open code file
+			snapshotOpenDocs(session.baseline);
 		} catch (error) { console.error("[silo] jumpTo failed", id, error); }
 	};
 

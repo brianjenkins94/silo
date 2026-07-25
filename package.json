@@ -12,9 +12,10 @@
   },
   "scripts": {
     "preinstall": "#node install/cooldown.mjs",
-    "build:core": "[ -d node_modules/@oxc-parser/binding-wasm32-wasi ] || npm i --no-save --force @oxc-parser/binding-wasm32-wasi@0.137.0; vite build vscode -c vscode/core.config.ts",
+    "build:core": "[ -d node_modules/@oxc-parser/binding-wasm32-wasi ] || npm i --no-save --force @oxc-parser/binding-wasm32-wasi@0.140.0; vite build vscode -c vscode/core.config.ts",
     "dev": "vite build vscode -c vscode/entry.config.ts && npm run build:core && vite vscode",
     "build": "vite build vscode -c vscode/entry.config.ts && npm run build:core && vite build vscode",
+    "package:vsix": "tsx vscode/package-vsix.ts",
     "silo": "tsx cli.ts",
     "test": "node --test \"test/node/*.test.mjs\" && npm run test:deno",
     "test:node": "node --test \"test/node/*.test.mjs\"",

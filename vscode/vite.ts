@@ -57,7 +57,7 @@ export function vscodePlugin(): Plugin {
 	const libDist = libDistDirectory();
 	const gameDist = fileURLToPath(new URL("./dist", import.meta.url));
 	// silo's oxc-wasm review core (core.js + wasm/WASI-worker) is built by core.config.ts into this same `dist`,
-	// so it's served like the rest of the workbench — no special-casing; the CJS extension import()s /__vscode__/core.js.
+	// so it's served like the rest of the workbench — no special-casing; the harness extension import()s /__vscode__/core.js.
 	// Game entry first (host/workbench), then the lib bundle (main.js + assets).
 	const roots = [gameDist, libDist];
 
