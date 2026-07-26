@@ -1,20 +1,18 @@
 # silo
 
-**Earned, bounded trust for scripts.** Silo fingerprints what a script *can do*, enforces it with a
-bundle-injected broker that prompts before anything new, and scores how much the script has been
-*proven* by its run history — so an unproven (e.g. AI-generated) script is **boxed, gated,
-drift-watched, and scored** instead of just dropped into your codebase next to your trusted code.
+**Stay in control of code you didn't write.** AI generates code faster than you can read it — and it
+quietly piles up next to the code you actually wrote and understand. Silo tracks, per function, what
+you've read and what your code can reach (files, network, shell), and points you at the risky parts you
+haven't looked at yet. Unproven code runs safely and earns trust over time, instead of just blending in.
 
 > Status: **prototype.** Extracted from the `ok-claude` repo, where it was dogfooded on that
 > project's `scripts/refresh.ts`. This is the design doc + working prototype.
 
-Silo applies that model at **two boundaries** — the **scripts you run** (fingerprint → box → broker →
-confidence) and the **dependencies you import** (a member-level *surface* → *capability* → *drift gate*) —
-and folds them into **one command**, `silo <script>`: on the first run after a dependency change it reviews
-your capability surface (blocks on an un-approved expansion, nudges on code you haven't read, establishes a
-first baseline if you have none) *before* executing the script under the broker. `silo` (bare) and
-`CI=true silo audit` are the explicit and CI-gate forms of that same audit. Same earned/bounded/honest-drift
-philosophy throughout.
+It works at **two boundaries** — the **code you run** and the **dependencies you import** — and folds
+both into one command. Run a script with `silo <script>` and it checks the new code first (pausing only
+if it reaches for something genuinely new, nudging you toward risky bits you haven't read), then runs it.
+`silo` on its own, or `CI=true silo` in CI, does the same check as a gate. Same idea throughout: code
+earns trust by being read and by running clean, and you hear about it the moment that changes.
 
 ## Why
 
@@ -63,82 +61,111 @@ npx tsx cli.ts accept <ref>       # onboard: take the code at <ref> as your revi
 
 ## How you actually use it
 
-silo has **two axes** and **one loop**. The axes are **capability** (what your code and dependencies *can do*, versus an approved baseline) and **quality** (how much of that capability-bearing code you've actually *read*). Everyday use is a single loop that keeps both honest as you — and your AI — write code.
+Here's the problem silo solves: AI writes code faster than you can read it, and you quietly lose track of what you've actually vetted versus what just piled up. Six months later you've got a codebase you *nominally* own but couldn't explain.
 
-### The two axes
+silo keeps that honest by watching two plain things — **what your code can do** (touch files, hit the network, run shell commands) and **what you've actually read** — and it tracks the second one *per function*, so you get credit for the parts you've been through instead of facing one intimidating wall.
+
+You keep working exactly as you do now. silo only speaks up in two cases: your code starts doing something *new*, or you changed something risky you haven't read yet.
 
 ```mermaid
 flowchart TB
-    subgraph cap["Capability axis — what your code CAN do"]
+    subgraph power["What your code can do"]
         direction TB
-        a["your code + dependencies"] --> b["capability surface:<br/>fs · net · exec · env · eval"]
-        b --> c{"expanded vs the<br/>committed baseline?"}
+        a["your code + its dependencies"] --> b["the powerful bits:<br/>files · network · shell · env"]
+        b --> c{"doing something<br/>NEW vs before?"}
     end
-    subgraph qual["Quality axis — what you have READ"]
+    subgraph read["What you've read"]
         direction TB
-        d["every function is a unit"] --> e["reviewed · waived ·<br/>stale · unreviewed"]
+        d["each function, tracked on its own"] --> e["read it · skipped it ·<br/>changed since you read it"]
     end
-    c -->|"a NEW capability"| block["BLOCKS the run<br/>— approve it or fix it"]
-    c -->|"unchanged"| gate{"unread + capability-bearing<br/>+ touched by this change?"}
+    c -->|"yes"| block["silo pauses and asks<br/>— ok it, or fix it"]
+    c -->|"no"| gate{"did this change touch risky<br/>code you haven't read?"}
     e --> gate
-    gate -->|"yes"| nudge["trust-ratchet NUDGE<br/>(non-blocking reminder)"]
-    gate -->|"no"| clear["nothing to do"]
+    gate -->|"yes"| nudge["a heads-up<br/>(just a nudge, never blocks)"]
+    gate -->|"no"| clear["carry on"]
 ```
 
-The only thing that ever **blocks** is a capability *expansion* — a genuinely new power (say your change starts touching `child_process`) versus your approved baseline. The quality axis never blocks a run; it **nudges**. That nudge is the **trust ratchet**: capability-bearing code your change *touched* but you haven't read. It's scoped to what you changed — "you made it worse," not "you have a giant backlog."
+Only the *new-behavior* case ever stops you (your code suddenly shelling out, say). The reading side never blocks — it just points at the handful of risky things *this change* touched. "You made it a little worse," not "here's your 400-item backlog."
 
 ### The everyday loop
 
 ```mermaid
 flowchart TD
-    onboard["ONBOARD once<br/>silo accept &lt;ref&gt;  (trust your history)<br/>silo  (write the capability baseline)"] --> work
-    work["write / generate code"] --> gate["run it:<br/>silo &lt;script&gt;  ·  silo  ·  CI=true silo"]
-    gate --> q1{"new capability<br/>vs baseline?"}
-    q1 -->|"yes — blocks"| approve["review it, then<br/>silo --approve"]
+    onboard["Set up once:<br/>silo accept &lt;ref&gt;  — trust what you already have"] --> work
+    work["write / generate code"] --> gate["run it the way you already do:<br/>silo &lt;script&gt;   (or just  silo,  or in CI)"]
+    gate --> q1{"started doing<br/>something new?"}
+    q1 -->|"yes"| approve["take a look, then<br/>silo --approve"]
     approve --> work
-    q1 -->|"no"| q2{"touched unread<br/>capability-bearing code?"}
-    q2 -->|"yes — nudge"| review["silo --reviewed &lt;unit&gt;<br/>or silo --waive &lt;unit&gt;"]
+    q1 -->|"no"| q2{"touched risky code<br/>you haven't read?"}
+    q2 -->|"yes"| review["read it → silo --reviewed &lt;unit&gt;<br/>(or wave it through → silo --waive)"]
     review --> work
-    q2 -->|"no"| run["boxed run executes;<br/>confidence rises on clean runs"]
+    q2 -->|"no"| run["it just runs — and the more it<br/>runs clean, the more trusted it gets"]
     run --> work
 ```
 
-The point: you don't run a special "review" ceremony. You keep working; silo rides the commands you already run (`silo <script>`, or the bare `silo` gate) and only interrupts you for a real capability expansion — otherwise it just points at the few risky things you touched.
+There's no separate "review time." silo rides the commands you already run and mostly stays out of the way.
 
 ### Which command, when
 
-| situation | command |
+| when you're… | run this |
 |---|---|
-| **adopting silo on an existing repo** | `silo accept <ref>` — take everything at `<ref>` as already-reviewed, then review *forward* |
-| establish the capability baseline | `silo` (bare) — writes `.silo/baseline.json`; commit it |
-| **you wrote or generated code** | `silo <script>` — reviews the surface if deps moved, boxes it, runs it under the broker |
-| what's left to review? | `silo review` — the queue (biggest / riskiest first); `--json` for tools |
-| **you read a unit** | `silo --reviewed <file>#<fn>` |
-| taking the debt knowingly | `silo --waive <file>#<fn>` |
-| a capability expanded on purpose | `silo --approve` |
-| installing dependencies | `npm install` — the release-age cooldown runs automatically |
-| in CI | `CI=true silo` — gates on drift, never writes |
+| **adopting silo on an existing repo** | `silo accept <ref>` — trust everything as of `<ref>`, then only worry about what changes after |
+| **writing or generating code** | `silo <script>` — runs it, and checks the new code along the way |
+| wondering what to look at | `silo review` — the list, most-worth-reading first |
+| done reading a function | `silo --reviewed <file>#<fn>` |
+| not going to read it right now | `silo --waive <file>#<fn>` |
+| sure the new behavior is fine | `silo --approve` |
+| installing packages | `npm install` — nothing extra to remember |
+| running in CI | `CI=true silo` — checks only, never changes anything |
 
-There are **two baselines**, one per axis: `.silo/baseline.json` (capability — what powers are approved, written by `silo` / `--approve`) and `.silo/review.json` (quality — which units you've read, written by `--reviewed` / `--waive` / `accept`). Both are committed; they *are* your project's trust state.
+silo remembers two things between runs (both committed to your repo, so they travel with the project): which new behaviors you've okayed, and which functions you've read.
 
-### A unit's review lifecycle
+### What "read" means, and why it survives a reformat
 
-Review is **hash-anchored per function**: a sign-off sticks only while that unit's code is unchanged, so an edit re-opens review automatically — there's no "unproven" label to remember to peel off.
+Reading is tracked per function, and it *sticks* — until that function's code actually changes, at which point silo quietly asks you to look again. No "unproven" sticky note to remember to remove; it just works off the code itself.
+
+Crucially, "changes" means the code *meaning* changed — not the formatting. Run Prettier, switch tabs to spaces, rewrap a line: silo doesn't care, because it compares the parsed structure, not the raw text. So a repo-wide reformat won't wipe out everything you've read.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> unreviewed
-    unreviewed --> reviewed: silo --reviewed (I read it)
-    unreviewed --> waived: silo --waive (accepted unread)
-    reviewed --> stale: the unit's code changes
-    waived --> stale: the unit's code changes
-    stale --> reviewed: read the new version
-    note right of stale
-        "changes" is STRUCTURAL — a reformat
-        (spaces to tabs, spacing) does NOT stale
-        a unit; the hash is over the parse tree.
+    state "waved through" as waved
+    state "needs another look" as look
+    [*] --> unread
+    unread --> read: you read it (silo --reviewed)
+    unread --> waved: waved through (silo --waive)
+    read --> look: the code actually changes
+    waved --> look: the code actually changes
+    look --> read: read the new version
+    note right of look
+        a reformat (spaces to tabs, spacing,
+        line wrapping) does NOT count as a change
     end note
 ```
+
+## Pairing silo with a coding agent
+
+This is where it gets interesting. When a coding agent (Claude Code, say) runs code it just wrote, every new thing that code does — write a file, call a host, shell out — is a decision someone has to make. Today that's either *you*, interrupted for every prompt, or a blanket "allow everything" — which is how an agent ends up `rm`-ing something it shouldn't.
+
+silo splits that decision into two tiers, so an agent can run its own code without you babysitting it and without handing it the keys:
+
+```mermaid
+flowchart TD
+    req["the code wants to do something<br/>(write a file · call a host · run a binary)"] --> bernard{"on BERNARD's redline?<br/>secrets · rm · eval · system dirs · unknown host"}
+    bernard -->|"yes"| glass["NOT auto-approvable —<br/>human break-glass only"]
+    bernard -->|"no"| jud{"JUDICIAL decider:<br/>your policy · your agent · you"}
+    jud -->|"allow"| go["proceeds<br/>(optionally remembered)"]
+    jud -->|"deny"| stop["blocked, with a reason"]
+    jud -->|"not set"| ask["falls back to a human prompt"]
+```
+
+- **BERNARD — the redline.** A hard list of things *nothing* gets to auto-approve: reading secrets (`~/.ssh`, `.env`, keychains), writing to system dirs, running `rm`/`sh`/`curl`, `eval`, calls to an unknown host. These never reach the routine "allow?" path — they demand a human break-glass. So no decider, human *or* AI, can quietly approve reading your private keys. Extend it per project with `BERNARD=<patterns>`.
+- **JUDICIAL — the decider.** Everything else routes to a decider *you* choose: `JUDICIAL=<command> silo <script>`. That command runs in your trusted shell (never inside the sandboxed code), gets each request as JSON on stdin — plus silo's own signals about the script (which one, how proven it is) — and answers `{ behavior: "allow" | "deny", scope?, persist? }`. Error or silence → denied.
+
+That verdict shape is deliberately the **same as the Claude Agent SDK's `PermissionResult`**, so wiring an agent in as the decider is natural: the agent sees *"this script wants `fs:write:/tmp/out.json`, confidence 0.2"* and decides — inside a redline it physically cannot cross. [`examples/judge-policy.mjs`](examples/judge-policy.mjs) is a working decider (a plain policy: allow reads, writes only under `/tmp`, deny exec); swap the policy body for an LLM call and it's an AI judge, or chain `policy → AI → human` in one command.
+
+It helps with the *reading* side too: `silo review --json` hands an agent the exact queue you'd see — each function, whether it's been read, whether it looks AI-authored, whether it's risky, and where it lives — so an agent can triage ("here are the five worth actually looking at") or work the list *with* you instead of leaving you to face it alone.
+
+> **Built vs. designed:** the two-tier decider (BERNARD + JUDICIAL), the `JUDICIAL=<command>` seam, the signals passed to it, the fail-closed contract, and the `review --json` seam are all in the repo and working. The *agent* judge itself is a command you supply — the example shows the shape. A turnkey Claude judge and an AI-assisted review-and-fix loop are designed-for, not yet built.
 
 ## Two layers of capability analysis
 
