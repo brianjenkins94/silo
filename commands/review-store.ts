@@ -8,14 +8,22 @@
  */
 import type { ReviewRecord, ReviewStore, Understood } from "./review-core";
 
-/** A review-store record for a unit signed off at `hash` (waived = accepted without reading). */
-export function reviewRecord(hash: string, waived = false): ReviewRecord {
-	return { "hash": hash, "at": new Date().toISOString(), ...(waived ? { "waived": true } : {}) };
+/** A review-store record for a unit signed off at `hash` (waived = accepted without reading). `fp` = the
+ *  per-statement fingerprints captured at review time (see review-core `fingerprintsOfSource`) — lets a later
+ *  re-review locate exactly what changed. */
+export function reviewRecord(hash: string, waived = false, fp?: readonly [string, string][]): ReviewRecord {
+	return { "hash": hash, "at": new Date().toISOString(), ...(waived ? { "waived": true } : {}), ...(fp && fp.length ? { "fp": fp as [string, string][] } : {}) };
 }
 
-/** `.silo/review.json` on disk: 2-space JSON + trailing newline. */
+/** `.silo/review.json` on disk: valid JSON, but written **sorted by unit id, one record per line** — so two
+ *  branches editing DIFFERENT units touch different lines and git auto-merges them (no conflict). Only two
+ *  people reviewing the SAME unit collide, and that resolves trivially (keep the hash matching merged source). */
 export function serializeStore(store: ReviewStore): string {
-	return JSON.stringify(store, undefined, 2) + "\n";
+	const ids = Object.keys(store).sort();
+
+	if (ids.length === 0) { return "{}\n"; }
+
+	return "{\n" + ids.map((id) => `${JSON.stringify(id)}: ${JSON.stringify(store[id])}`).join(",\n") + "\n}\n";
 }
 
 /** THE ratchet gate: a unit is gated when it's capability-bearing (`exposed`) AND changed by this diff

@@ -29,7 +29,7 @@ import * as fs from "@brianjenkins94/util/fs";
 import * as path from "node:path";
 // The PURE review kernel — shared with the browser extension (see commands/review-core.ts). review.ts is
 // the NODE orchestration around it: git scoping, fs reads, eslint, provenance, the store on disk.
-import { type ReviewStore, type Understood, type Unit, understoodOf, unitsOfSource } from "./review-core.js";
+import { fingerprintsOfSource, type ReviewStore, type Understood, type Unit, understoodOf, unitsOfSource } from "./review-core.js";
 import { isGated, reviewRecord, serializeStore } from "./review-store.js";
 import { analyzeFile } from "../shared/provenance.js";
 
@@ -213,8 +213,9 @@ export async function markReviewed(target: string, waived = false): Promise<Unit
 	const [rawFile, fn] = target.split("#");
 	const file = path.relative(ROOT, path.resolve(rawFile));
 	const marked = unitsOf(file).filter((u) => fn === undefined || u.id === `${file}#${fn}`);
+	const fps = marked.length ? fingerprintsOfSource(file, fs.readFileSync(path.join(ROOT, file))) : {};
 
-	for (const u of marked) { store[u.id] = reviewRecord(u.hash, waived); }
+	for (const u of marked) { store[u.id] = reviewRecord(u.hash, waived, fps[u.id]); }
 	if (marked.length) { await saveStore(store); }
 
 	return marked;
@@ -243,7 +244,12 @@ export async function acceptRef(ref: string): Promise<{ "units": number; "files"
 		let src: string;
 
 		try { src = git("show", `${commit}:${f}`); } catch { continue; }   // absent/binary at that rev
-		try { for (const u of unitsOfSource(f, src)) { store[u.id] = reviewRecord(u.hash); units += 1; } } catch { /* unparseable at that rev */ }
+
+		try {
+			const fps = fingerprintsOfSource(f, src);
+
+			for (const u of unitsOfSource(f, src)) { store[u.id] = reviewRecord(u.hash, false, fps[u.id]); units += 1; }
+		} catch { /* unparseable at that rev */ }
 	}
 
 	await saveStore(store);

@@ -13,13 +13,16 @@
  */
 import { createHash } from "node:crypto";
 import { parseSync } from "oxc-parser";
+import { redactSecrets } from "./redact.js";
 
 /** `waived` = consciously accepted WITHOUT reading it. Satisfies the gate but is NOT trust; hash-anchored
  *  like a review, so editing the unit raises it again. */
 export type Understood = "reviewed" | "waived" | "stale" | "unreviewed";
 
-/** A review store record — `.silo/review.json` is `Record<unitId, ReviewRecord>`. */
-export interface ReviewRecord { "hash": string; "note"?: string; "at": string; "waived"?: boolean }
+/** A review store record — `.silo/review.json` is `Record<unitId, ReviewRecord>`. `fp` = per-statement
+ *  fingerprints of the approved code (see fingerprintsOfSource) — hashes only, so a re-review can locate what
+ *  changed without any source on disk. */
+export interface ReviewRecord { "hash": string; "note"?: string; "at": string; "waived"?: boolean; "fp"?: [string, string][] }
 export type ReviewStore = Record<string, ReviewRecord>;
 
 export interface Unit {
@@ -154,6 +157,109 @@ export function unitsOfSource(file: string, src: string): Unit[] {
 	units.push({ "id": `${file}#<module>`, "file": file, "hash": sha(canonical(glue)), "startLine": 0, "endLine": 0 });
 
 	return units;
+}
+
+// Literal node types whose text we redact (full) or drop (shape) when fingerprinting — so a secret never
+// becomes a persisted per-statement hash, and formatting-only literal churn doesn't read as a change.
+const LITERAL_TYPES = new Set(["Literal", "StringLiteral", "NumericLiteral", "BigIntLiteral", "BooleanLiteral", "NullLiteral", "RegExpLiteral"]);
+
+/** Structural JSON of ONE statement for fingerprinting. `strip` = shape mode: drop all literal text, leaving
+ *  only structure. Otherwise full mode: keep values, but run string literals through redactSecrets so a
+ *  hardcoded secret never lands in a persisted hash. Positions stripped + keys sorted, like `canonical`. */
+function fingerprintJSON(node: unknown, strip: boolean): string {
+	// eslint-disable-next-line ts/no-explicit-any
+	return JSON.stringify(node, function(this: any, key: string, value: any) {
+		if (POSITION_KEYS.has(key)) { return undefined; }
+		if (typeof value === "bigint") { return value.toString(); }
+
+		// Literal text lives at Literal.value / .raw and TemplateElement.value.{raw,cooked}.
+		if (key === "raw" || key === "cooked" || (key === "value" && LITERAL_TYPES.has(this.type))) {
+			if (strip) { return typeof value === "object" ? undefined : typeof value; }
+
+			return typeof value === "string" ? redactSecrets(value) : value;
+		}
+
+		if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+			// eslint-disable-next-line ts/no-explicit-any
+			const sorted: Record<string, any> = {};
+
+			for (const k of Object.keys(value).sort()) { sorted[k] = value[k]; }
+
+			return sorted;
+		}
+
+		return value;
+	});
+}
+
+// Per-statement fingerprints keep only the PREFIX of each hash. Detection stays reliable (collisions only
+// matter within one unit's handful of statements), but a truncated hash has many colliding preimages — so
+// brute-forcing a literal back out of it yields ambiguous candidates, not the value. Discourages, doesn't
+// prevent: a determined attack on a low-entropy literal is still possible (which is why redactSecrets also
+// runs on the full hash for known secret formats). Tune here.
+const FP_HASH_LEN = 6;
+const short = (h: string): string => h.slice(0, FP_HASH_LEN);
+const fpOf = (stmt: unknown): [string, string] => [short(sha(fingerprintJSON(stmt, false))), short(sha(fingerprintJSON(stmt, true)))];
+
+/** The statements that make up a unit's body — what we fingerprint individually to locate a change later. */
+// eslint-disable-next-line ts/no-explicit-any
+function bodyStatements(node: any): any[] {
+	const decl = node?.type?.startsWith("Export") ? (node.declaration ?? node) : node;
+
+	if (decl?.type === "FunctionDeclaration" || decl?.type === "TSDeclareFunction") { return decl.body?.body ?? []; }
+	if (decl?.type === "MethodDefinition") { return decl.value?.body?.body ?? []; }
+	if (decl?.type === "VariableDeclaration") {
+		const init = decl.declarations?.[0]?.init;
+
+		if (init?.body?.type === "BlockStatement") { return init.body.body ?? []; }
+
+		return init ? [init] : [];   // expression-bodied arrow → the expression is the single "statement"
+	}
+
+	return [];
+}
+
+/** Per-unit statement fingerprints for SOURCE: `[fullHash, shapeHash]` per body statement. Captured at review
+ *  time and stored in the record so a later re-review can locate exactly what changed (see locateChanges) —
+ *  hashes only, no source persisted. Not called on the hot path; only on sign-off. */
+export function fingerprintsOfSource(file: string, src: string): Record<string, [string, string][]> {
+	// eslint-disable-next-line ts/no-explicit-any
+	const { program } = parseSync(file, src) as any;
+	const fns = spans(program);
+	const claimed = new Set(fns.map((f) => f.stmt));
+	const out: Record<string, [string, string][]> = {};
+
+	for (const f of fns) { out[`${file}#${f.name}`] = bodyStatements(f.node).map(fpOf); }
+	// eslint-disable-next-line ts/no-explicit-any
+	out[`${file}#<module>`] = ((program.body ?? []) as any[]).filter((s) => !claimed.has(s)).map(fpOf);
+
+	return out;
+}
+
+export interface ChangedStatement { "startLine": number; "endLine": number; "kind": "structural" | "value" }
+
+/** The re-review locator: given a unit's CURRENT source and the fingerprints stored when it was last reviewed,
+ *  return the statements that changed since — their current line ranges, and whether it's a `value`-only edit
+ *  (structure intact, a literal moved) or a `structural` one. Works from hashes alone; no stored source. */
+export function locateChanges(file: string, src: string, unitId: string, storedFp: readonly [string, string][]): ChangedStatement[] {
+	// eslint-disable-next-line ts/no-explicit-any
+	const { program } = parseSync(file, src) as any;
+	const fns = spans(program);
+	const claimed = new Set(fns.map((f) => f.stmt));
+	const fn = fns.find((f) => `${file}#${f.name}` === unitId);
+	// eslint-disable-next-line ts/no-explicit-any
+	const stmts: any[] = fn ? bodyStatements(fn.node) : unitId.endsWith("#<module>") ? ((program.body ?? []) as any[]).filter((s) => !claimed.has(s)) : [];
+	const storedFull = new Set(storedFp.map((x) => x[0]));
+	const storedShape = new Set(storedFp.map((x) => x[1]));
+	const starts = lineIndex(src);
+	const out: ChangedStatement[] = [];
+
+	for (const stmt of stmts) {
+		if (storedFull.has(short(sha(fingerprintJSON(stmt, false))))) { continue; }   // unchanged since review
+		out.push({ "startLine": lineAt(starts, stmt.start), "endLine": lineAt(starts, stmt.end), "kind": storedShape.has(short(sha(fingerprintJSON(stmt, true)))) ? "value" : "structural" });
+	}
+
+	return out;
 }
 
 /** unreviewed (never signed) ≻ stale (signed, then edited) ≻ waived (accepted unread) ≻ reviewed (read). */
